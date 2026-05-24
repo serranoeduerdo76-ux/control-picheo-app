@@ -18,47 +18,59 @@ def obtener_motor_db():
 engine = obtener_motor_db()
 
 def inicializar_base_de_datos():
-    """Crea las tablas necesarias si no existen."""
+    """Crea exactamente las tablas del sistema original."""
     with engine.connect() as conn:
         # Tabla de Usuarios
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS usuarios (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario TEXT NOT NULL UNIQUE,
-                clave TEXT NOT NULL,
-                rol TEXT DEFAULT 'usuario'
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                nombre TEXT UNIQUE NOT NULL, 
+                pass TEXT NOT NULL, 
+                rol TEXT NOT NULL DEFAULT 'operador'
             );
         """))
-        # Tabla de Logs de Picheo
+        
+        # Tabla de Picheos (Estructura idéntica a Geremo.py)
         conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS logs_picheo (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                lanzador TEXT NOT NULL,
-                tipo_picheo TEXT,
-                velocidad REAL,
-                spin_rate INTEGER,
-                resultado TEXT,
-                fecha TEXT,
-                notas TEXT
+            CREATE TABLE IF NOT EXISTS picheos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                fecha TEXT NOT NULL, 
+                id_control TEXT NOT NULL, 
+                cantidad INTEGER NOT NULL, 
+                operador TEXT NOT NULL
+            );
+        """))
+        
+        # Tabla de Configuración
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS config (
+                clave TEXT PRIMARY KEY, 
+                valor TEXT NOT NULL
             );
         """))
         conn.commit()
 
-def crear_usuario_defecto():
-    """Inserta el administrador inicial si la tabla está vacía."""
+def preparar_datos_defecto():
+    """Inserta configuraciones y administrador inicial si están vacíos."""
     with engine.connect() as conn:
+        # Insertar configuración de precio por defecto (0.024)
+        conn.execute(text("INSERT OR IGNORE INTO config (clave, valor) VALUES ('precio', '0.024');"))
+        
+        # Crear usuario administrador por defecto si la tabla está vacía
         resultado = conn.execute(text("SELECT COUNT(*) FROM usuarios;")).scalar()
         if resultado == 0:
+            # Nota: Al migrar a web es ideal usar hashes (SHA256), por compatibilidad 
+            # directa con tu login actual se establece la clave por defecto
             conn.execute(text("""
-                INSERT INTO usuarios (usuario, clave, rol) 
-                VALUES ('admin', 'Admin123*', 'admin');
+                INSERT OR IGNORE INTO usuarios (nombre, pass, rol) 
+                VALUES ('admin', 'admin123', 'admin');
             """))
-            conn.commit()
+        conn.commit()
 
-# Inicializar estructuras de datos
+# Inicializar base de datos
 try:
     inicializar_base_de_datos()
-    crear_usuario_defecto()
+    preparar_datos_defecto()
 except Exception as e:
     st.error(f"Error al inicializar la base de datos: {e}")
 
@@ -68,6 +80,7 @@ except Exception as e:
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = None
+    st.session_state["rol"] = None
 
 if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
@@ -80,28 +93,31 @@ if not st.session_state["autenticado"]:
         
         if boton_login:
             with engine.connect() as conn:
-                query = text("SELECT usuario, clave FROM usuarios WHERE usuario = :u AND clave = :c;")
+                # Comprobación directa basada en tus columnas de 'usuarios'
+                query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u AND pass = :c;")
                 usuario_db = conn.execute(query, {"u": usuario_input, "c": clave_input}).fetchone()
                 
                 if usuario_db:
                     st.session_state["autenticado"] = True
                     st.session_state["usuario"] = usuario_db[0]
+                    st.session_state["rol"] = usuario_db[2]
                     st.rerun()
                 else:
                     st.error("❌ Usuario o contraseña incorrectos.")
-    st.caption("Nota: Si es la primera ejecución, ingresa con 'admin' y clave 'Admin123*'.")
+    st.caption("Nota: Datos iniciales: 'admin' con clave 'admin123'.")
 
 # ==========================================
-# 3. DASHBOARD PRINCIPAL (SESIÓN ACTIVA)
+# 3. INTERFAZ PRINCIPAL (SESIÓN ACTIVA)
 # ==========================================
 else:
     # Barra lateral de navegación
-    st.sidebar.title(f"Bienvenido, {st.session_state['usuario']}")
+    st.sidebar.title(f"Bienvenido, {st.session_state['usuario'].upper()}")
     opcion = st.sidebar.radio("Navegación", ["Dashboard Estado", "Módulo de Registro"])
     
     if st.sidebar.button("Cerrar Sesión"):
         st.session_state["autenticado"] = False
         st.session_state["usuario"] = None
+        st.session_state["rol"] = None
         st.rerun()
 
     # --- VISTA 1: ESTADO DEL SISTEMA ---
@@ -112,69 +128,72 @@ else:
         col1, col2, col3 = st.columns(3)
         col1.metric("Estado DB", "Conectado", "↑ Estable")
         col2.metric("Motor SQL", "SQLAlchemy", "↑ Verificado")
-        col3.metric("Sesión Activa", "Administrador", "↑ Segura", delta_color="normal")
+        col3.metric("Rol de Usuario", st.session_state["rol"].upper(), "✔ Activo")
 
-    # --- VISTA 2: MÓDULO DE REGISTRO INTERACTIVO ---
+    # --- VISTA 2: MÓDULO DE REGISTRO INTEGRADO ---
     elif opcion == "Módulo de Registro":
         st.title("⚾ Módulo de Registro")
         
         tab1, tab2 = st.tabs(["📝 Registro Individual", "📂 Carga Masiva (CSV/Excel)"])
         
-        # Pestaña Registro Manual
+        # Pestaña: Registro Individual (Fiel a guardar_dato de Geremo.py)
         with tab1:
             st.write("### Registrar Nuevo Log de Picheo")
             with st.form("formulario_picheo", clear_on_submit=True):
-                col1_p, col2_p, col3_p = st.columns(3)
-                with col1_p:
-                    lanzador = st.text_input("Nombre del Lanzador")
-                    tipo_picheo = st.selectbox("Tipo de Lanzamiento", ["Recta (FB)", "Curva (CB)", "Slider (SL)", "Cambio (CH)", "Sinker (SI)"])
-                with col2_p:
-                    velocidad = st.number_input("Velocidad (MPH)", min_value=0.0, max_value=110.0, value=90.0, step=0.1)
-                    spin_rate = st.number_input("Spin Rate (RPM)", min_value=0, max_value=4000, value=2200, step=50)
-                with col3_p:
-                    resultado = st.selectbox("Resultado", ["Strike", "Bola", "Hit", "Out", "Jonrón"])
-                    fecha = st.date_input("Fecha")
+                col1, col2, col3 = st.columns(3)
                 
-                notas = st.text_area("Observaciones del Scouting")
-                btn_guardar = st.form_submit_button("Guardar Lanzamiento")
+                with col1:
+                    reg_fecha = st.date_input("Fecha")
+                with col2:
+                    id_control = st.text_input("ID Control")
+                with col3:
+                    cantidad = st.number_input("Cantidad", min_value=1, step=1, value=1)
+                
+                btn_guardar = st.form_submit_button("GUARDAR REGISTRO")
                 
                 if btn_guardar:
-                    if not lanzador.strip():
-                        st.error("El nombre del lanzador es requerido.")
+                    if not id_control.strip():
+                        st.error("El campo 'ID Control' es obligatorio.")
                     else:
                         try:
                             with engine.connect() as conn:
+                                # Inserción estricta usando tus columnas exactas
                                 conn.execute(text("""
-                                    INSERT INTO logs_picheo (lanzador, tipo_picheo, velocidad, spin_rate, resultado, fecha, notas)
-                                    VALUES (:lanzador, :tipo_picheo, :velocidad, :spin_rate, :resultado, :fecha, :notas);
+                                    INSERT INTO picheos (fecha, id_control, cantidad, operador)
+                                    VALUES (:fecha, :id_control, :cantidad, :operador);
                                 """), {
-                                    "lanzador": lanzador, "tipo_picheo": tipo_picheo, "velocidad": velocidad,
-                                    "spin_rate": spin_rate, "resultado": resultado, "fecha": str(fecha), "notas": notas
+                                    "fecha": str(reg_fecha),
+                                    "id_control": id_control.strip(),
+                                    "cantidad": int(cantidad),
+                                    "operador": st.session_state["usuario"]
                                 })
                                 conn.commit()
-                            st.success(f"✅ ¡Registro guardado para {lanzador}!")
+                            st.success(f"✅ Registro guardado: {id_control.strip()} - {cantidad} picheos.")
                         except Exception as e:
-                            st.error(f"Error de almacenamiento: {e}")
+                            st.error(f"Error al almacenar el registro: {e}")
                             
-        # Pestaña Carga Masiva
+        # Pestaña: Carga Masiva (Estructurada para tus columnas de la tabla 'picheos')
         with tab2:
-            st.write("### Importar Logs desde Archivo")
-            archivo_cargado = st.file_uploader("Sube un archivo CSV o Excel", type=["csv", "xlsx"])
+            st.write("### Importar Picheos desde Archivo")
+            st.info("El archivo externo debe contener exactamente las siguientes columnas: *fecha, id_control, cantidad, operador*")
+            
+            archivo_cargado = st.file_uploader("Sube tu archivo plano", type=["csv", "xlsx"])
             
             if archivo_cargado is not None:
                 try:
                     df = pd.read_csv(archivo_cargado) if archivo_cargado.name.endswith('.csv') else pd.read_excel(archivo_cargado)
-                    st.write("##### Vista previa de los datos:")
+                    st.write("##### Vista previa de los datos detectados:")
                     st.dataframe(df.head())
                     
                     btn_procesar = st.button("Confirmar Carga Masiva")
                     if btn_procesar:
-                        columnas_ok = ['lanzador', 'tipo_picheo', 'velocidad', 'spin_rate', 'resultado', 'fecha']
-                        if all(c in df.columns for c in columnas_ok):
+                        # Validación estricta contra las columnas exactas de tu tabla 'picheos'
+                        columnas_requeridas = ['fecha', 'id_control', 'cantidad', 'operador']
+                        if all(c in df.columns for c in columnas_requeridas):
                             with engine.begin() as conexion:
-                                df.to_sql('logs_picheo', con=conexion, if_exists='append', index=False)
-                            st.success(f"🔥 Se importaron {len(df)} registros de forma masiva.")
+                                df.to_sql('picheos', con=conexion, if_exists='append', index=False)
+                            st.success(f"🔥 Se importaron exitosamente {len(df)} registros a la tabla 'picheos'.")
                         else:
-                            st.error("Estructura inválida. Asegúrate de incluir las columnas estándar.")
+                            st.error("Error: Las columnas del archivo no coinciden con la estructura de la tabla 'picheos'.")
                 except Exception as e:
-                    st.error(f"Error procesando archivo: {e}")
+                    st.error(f"Error procesando el archivo: {e}")
