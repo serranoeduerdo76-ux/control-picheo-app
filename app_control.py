@@ -18,17 +18,19 @@ def inicializar_motor_seguro():
     Si no existe, cae de forma segura a SQLite local.
     """
     if "connections" in st.secrets and "postgres" in st.secrets["connections"]:
-        # Usa psycopg2 a través de SQLAlchemy para conectar a Postgres en la nube
         db_url = st.secrets["connections"]["postgres"]["url"]
         return create_engine(db_url, pool_size=10, max_overflow=20, pool_pre_ping=True)
     elif "db_url" in st.secrets:
         return create_engine(st.secrets["db_url"])
     else:
-        # Fallback local de desarrollo
         return create_engine("sqlite:///control_picheo_app.db", connect_args={"timeout": 30})
 
+# Inicializamos el motor físico de la base de datos
 engine = inicializar_motor_seguro()
-IS_POSTGRES = "postgres" in engine.drivername or "postgresql" in engine.drivername
+
+# CORRECCIÓN EN SQLALCHEMY 2.0: Acceso al dialecto mediante el atributo 'url'
+IS_POSTGRES = "postgres" in engine.url.drivername or "postgresql" in engine.url.drivername
+
 def inicializar_base_de_datos():
     """Crea las estructuras analíticas adaptando los tipos de datos al motor activo."""
     serial_type = "SERIAL" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -68,19 +70,15 @@ def inicializar_base_de_datos():
 def preparar_datos_defecto():
     """Garantiza los parámetros de arranque financiero y usuario maestro."""
     with engine.connect() as conn:
-        # Inserción segura compatible con ambos motores
         if IS_POSTGRES:
             conn.execute(text("INSERT INTO config (clave, valor) VALUES ('precio', '0.024') ON CONFLICT (clave) DO NOTHING;"))
             
-            # Verificar si se requiere usuario maestro inicial
             existe_user = conn.execute(text("SELECT COUNT(*) FROM usuarios;")).scalar()
             if existe_user == 0:
-                # Cifrado seguro usando la librería BCRYPT requerida
                 salt = bcrypt.gensalt()
                 hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
                 conn.execute(text("INSERT INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
         else:
-            # Dialecto SQLite de respaldo
             conn.execute(text("INSERT OR IGNORE INTO config (clave, valor) VALUES ('precio', '0.024');"))
             if conn.execute(text("SELECT COUNT(*) FROM usuarios;")).scalar() == 0:
                 salt = bcrypt.gensalt()
@@ -116,11 +114,10 @@ if not st.session_state["autenticado"]:
         if boton_login:
             if usuario_input and clave_input:
                 with engine.connect() as conn:
-                    # Traemos el registro del usuario si existe
                     query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
                     usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
                     
-                    # Verificación segura de hash contra la contraseña en texto plano utilizando bcrypt
+                    # Verificación segura utilizando hashes de bcrypt
                     if usuario_db and bcrypt.checkpw(clave_input.encode('utf-8'), usuario_db[1].encode('utf-8')):
                         st.session_state["autenticado"] = True
                         st.session_state["usuario"] = usuario_db[0]
@@ -332,7 +329,7 @@ else:
                     st.warning("La contraseña debe tener mínimo 6 caracteres por seguridad.")
                 else:
                     try:
-                        # Implementación del cifrado seguro Bcrypt con salting dinámico
+                        # Implementación del cifrado seguro Bcrypt
                         salt = bcrypt.gensalt()
                         hash_nueva_clave = bcrypt.hashpw(n_clave.encode('utf-8'), salt).decode('utf-8')
                         
