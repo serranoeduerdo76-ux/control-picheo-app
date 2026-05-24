@@ -17,14 +17,20 @@ st.set_page_config(
 # 2. CONEXIÓN Y BASE DE DATOS (SQLAlchemy 2.0)
 # ==========================================
 def obtener_motor_db():
-    """Detecta si está en producción (Streamlit Cloud) o local."""
-    if "connections" in st.secrets:
-        # Configuración para producción en la nube
-        db_url = st.secrets["connections"]["sqlite"]["url"]
-    else:
-        # Configuración por defecto para desarrollo local
-        db_url = "sqlite:///control_picheo.db"
-    
+    """Detecta de forma segura si está en producción (Streamlit Cloud) o local."""
+    try:
+        # Validación explícita de la jerarquía de secretos para evitar KeyError
+        if "connections" in st.secrets and "sqlite" in st.secrets["connections"]:
+            db_url = st.secrets["connections"]["sqlite"]["url"]
+        elif "db_url" in st.secrets:
+            db_url = st.secrets["db_url"]
+        else:
+            # Configuración por defecto para desarrollo local
+            db_url = "sqlite:///control_picheo.db"
+    except Exception:
+        # Caída segura ante cualquier problema leyendo variables de entorno
+        db_url = "sqlite:///control_picheo_fallback.db"
+        
     return create_engine(db_url, echo=False, connect_args={"check_same_thread": False})
 
 engine = obtener_motor_db()
@@ -87,7 +93,7 @@ def registrar_usuario_inicial():
         with engine.connect() as conn:
             conteo = conn.execute(query_verificar).scalar()
             if conteo == 0:
-                # Contraseña por defecto: 'Admin123*' (Se recomienda cambiarla)
+                # Contraseña por defecto: 'Admin123*'
                 hash_admin = generar_hash("Admin123*")
                 conn.execute(query_insertar, {
                     "usr": "admin",
@@ -131,7 +137,8 @@ def vista_login():
         with st.form("formulario_login", clear_on_submit=False):
             input_user = st.text_input("Nombre de Usuario", placeholder="Ej: eserrano").strip()
             input_pass = st.text_input("Contraseña", type="password", placeholder="••••••••")
-            boton_enviar = st.form_submit_with_button("Iniciar Sesión")
+            # Corrección del método nativo de Streamlit para el envío de formularios
+            boton_enviar = st.form_submit_button("Iniciar Sesión")
             
             if boton_enviar:
                 if not input_user or not input_pass:
@@ -150,7 +157,6 @@ def vista_login():
 
 def vista_principal():
     """Panel principal una vez superada la autenticación."""
-    # Barra lateral de navegación y logout
     st.sidebar.title(f"Bienvenido, {st.session_state.usuario_nombre}")
     st.sidebar.info(f"Nivel de acceso: {st.session_state.usuario_rol}")
     
@@ -160,14 +166,12 @@ def vista_principal():
         st.session_state.usuario_rol = ""
         st.rerun()
     
-    # Menú de navegación interno
     opcion = st.sidebar.radio("Navegación", ["Dashboard Analítico", "Ingreso de Datos", "Configuración"])
     
     if opcion == "Dashboard Analítico":
         st.header("📊 Dashboard de Control de Picheo")
         st.write("La base de datos está activa y respondiendo correctamente.")
         
-        # Ejemplo de métricas de rendimiento del sistema
         kpi1, kpi2, kpi3 = st.columns(3)
         kpi1.metric("Estado DB", "Conectado", "Estable")
         kpi2.metric("Motor SQL", "SQLAlchemy 2.0", "Verificado")
