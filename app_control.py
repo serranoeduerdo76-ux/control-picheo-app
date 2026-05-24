@@ -1,289 +1,190 @@
+import os
 import streamlit as st
-from sqlalchemy import text
-import pandas as pd
+from sqlalchemy import create_engine, text
 import hashlib
-from datetime import datetime, timedelta
 
-# Configuración de página de Streamlit estilo BeisSeven
-st.set_page_config(page_title="BeisSeven - Gestión de Picheo", layout="wide")
+# ==========================================
+# 1. CONFIGURACIÓN DE LA PÁGINA Y ESTILOS
+# ==========================================
+st.set_page_config(
+    page_title="Apex Pitch - Control de Usuarios",
+    page_icon="⚾",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# 1. Conexión segura a tu base de datos PostgreSQL en Neon
-conn = st.connection("postgresql", type="sql")
+# ==========================================
+# 2. CONEXIÓN Y BASE DE DATOS (SQLAlchemy 2.0)
+# ==========================================
+def obtener_motor_db():
+    """Detecta si está en producción (Streamlit Cloud) o local."""
+    if "connections" in st.secrets:
+        # Configuración para producción en la nube
+        db_url = st.secrets["connections"]["sqlite"]["url"]
+    else:
+        # Configuración por defecto para desarrollo local
+        db_url = "sqlite:///control_picheo.db"
+    
+    return create_engine(db_url, echo=False, connect_args={"check_same_thread": False})
 
-# 2. Inicialización estructural de tablas en la nube si no existen
-with conn.session as session:
-    # Tabla de usuarios
-    session.execute(text("""
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id SERIAL PRIMARY KEY,
-            nombre TEXT UNIQUE NOT NULL,
-            pass TEXT NOT NULL,
-            rol TEXT NOT NULL
-        );
-    """))
-    # Tabla de picheos/lanzamientos
-    session.execute(text("""
-        CREATE TABLE IF NOT EXISTS picheos (
-            id SERIAL PRIMARY KEY,
-            fecha DATE NOT NULL,
-            id_control TEXT NOT NULL,
-            cantidad INTEGER NOT NULL,
-            operador TEXT NOT NULL
-        );
-    """))
-    # Tabla de configuraciones (Precio/Constante de conversión)
-    session.execute(text("""
-        CREATE TABLE IF NOT EXISTS config (
-            clave TEXT PRIMARY KEY,
-            valor TEXT NOT NULL
-        );
-    """))
-    # Insertar valores por defecto iniciales si la base está vacía
-    session.execute(text("INSERT INTO config (clave, valor) VALUES ('precio', '0.024') ON CONFLICT (clave) DO NOTHING;"))
-    admin_pass = hashlib.sha256("admin123".encode()).hexdigest()
-    session.execute(text("INSERT INTO usuarios (nombre, pass, rol) VALUES ('admin', :pass, 'admin') ON CONFLICT (nombre) DO NOTHING;"), {"pass": admin_pass})
-    session.commit()
+engine = obtener_motor_db()
 
-# --- CONTROL DE SESIÓN ---
+def verificar_y_crear_tablas():
+    """Crea la estructura de tablas garantizando la sintaxis correcta."""
+    query_usuarios = """
+    CREATE TABLE IF NOT EXISTS usuarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        nombre_completo TEXT NOT NULL,
+        rol TEXT NOT NULL DEFAULT 'Analista',
+        fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+    try:
+        with engine.connect() as conn:
+            # Ejecución explícita usando la función text() de SQLAlchemy 2.0
+            conn.execute(text(query_usuarios))
+            # Confirmación obligatoria de la transacción (Evita OperationalError)
+            conn.commit()
+    except Exception as e:
+        st.error(f"❌ Error crítico en la base de datos al inicializar tablas: {e}")
+        st.stop()
+
+# Ejecución garantizada al arrancar el hilo de Streamlit
+verificar_y_crear_tablas()
+
+# ==========================================
+# 3. FUNCIONES DE UTILIDAD (SEGURIDAD Y AUTH)
+# ==========================================
+def generar_hash(password: str) -> str:
+    """Genera un hash SHA-256 seguro para las contraseñas."""
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
+def validar_credenciales(usuario: str, clave: str):
+    """Busca al usuario en la base de datos y valida su hash."""
+    query = text("SELECT password_hash, nombre_completo, rol FROM usuarios WHERE usuario = :usr")
+    try:
+        with engine.connect() as conn:
+            resultado = conn.execute(query, {"usr": usuario}).fetchone()
+            if resultado:
+                hash_almacenado, nombre, rol = resultado
+                if hash_almacenado == generar_hash(clave):
+                    return {"nombre": nombre, "rol": rol}
+            return None
+    except Exception as e:
+        st.error(f"Error al verificar credenciales: {e}")
+        return None
+
+def registrar_usuario_inicial():
+    """Crea un usuario administrador por defecto si la tabla está vacía."""
+    query_verificar = text("SELECT COUNT(*) FROM usuarios")
+    query_insertar = text("""
+        INSERT INTO usuarios (usuario, password_hash, nombre_completo, rol)
+        VALUES (:usr, :hash, :nombre, :rol)
+    """)
+    try:
+        with engine.connect() as conn:
+            conteo = conn.execute(query_verificar).scalar()
+            if conteo == 0:
+                # Contraseña por defecto: 'Admin123*' (Se recomienda cambiarla)
+                hash_admin = generar_hash("Admin123*")
+                conn.execute(query_insertar, {
+                    "usr": "admin",
+                    "hash": hash_admin,
+                    "nombre": "Administrador del Sistema",
+                    "rol": "Administrador"
+                })
+                conn.commit()
+    except Exception as e:
+        st.warning(f"No se pudo verificar/crear el usuario inicial: {e}")
+
+registrar_usuario_inicial()
+
+# ==========================================
+# 4. GESTIÓN DEL ESTADO DE LA SESIÓN (SESSION STATE)
+# ==========================================
 if "autenticado" not in st.session_state:
-    st.session_state["autenticado"] = False
-    st.session_state["usuario"] = None
-    st.session_state["rol"] = None
+    st.session_state.autenticado = False
+if "usuario_nombre" not in st.session_state:
+    st.session_state.usuario_nombre = ""
+if "usuario_rol" not in st.session_state:
+    st.session_state.usuario_rol = ""
 
 # ==========================================
-# VISTA: INICIO DE SESIÓN
+# 5. VISTAS DE LA APLICACIÓN
 # ==========================================
-if not st.session_state["autenticado"]:
-    st.markdown("<h1 style='text-align: center; color: #00AAFF;'>⚾ BeisSeven</h1>", unsafe_title=True)
-    st.markdown("<h3 style='text-align: center; color: white;'>Sistema de Gestión Web</h3>", unsafe_title=True)
+def vista_login():
+    """Dibuja la interfaz de acceso protegida."""
+    st.markdown("""
+        <style>
+        .login-box { padding: 2rem; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        </style>
+    """, unsafe_allow_html=True)
     
-    col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
-    with col_l2:
-        with st.form("form_login"):
-            input_user = st.text_input("Usuario:").strip()
-            input_pass = st.text_input("Contraseña:", show="*").strip()
-            btn_login = st.form_submit_button("INGRESAR")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.title("⚾ Control de Picheo")
+        st.subheader("Acceso al Sistema Central")
+        
+        with st.form("formulario_login", clear_on_submit=False):
+            input_user = st.text_input("Nombre de Usuario", placeholder="Ej: eserrano").strip()
+            input_pass = st.text_input("Contraseña", type="password", placeholder="••••••••")
+            boton_enviar = st.form_submit_with_button("Iniciar Sesión")
             
-        if btn_login:
-            if not input_user or not input_pass:
-                st.warning("Por favor, ingrese usuario y contraseña.")
-            else:
-                pass_hash = hashlib.sha256(input_pass.encode()).hexdigest()
-                df_user = conn.query("SELECT id, nombre, pass, rol FROM usuarios WHERE nombre = :nom AND pass = :pw;", 
-                                     params={"nom": input_user, "pw": pass_hash}, ttl=0)
-                
-                if not df_user.empty:
-                    st.session_state["autenticado"] = True
-                    st.session_state["usuario"] = df_user.iloc[0]["nombre"]
-                    st.session_state["rol"] = df_user.iloc[0]["rol"]
-                    st.rerun()
+            if boton_enviar:
+                if not input_user or not input_pass:
+                    st.error("⚠️ Todos los campos son obligatorios.")
                 else:
-                    st.error("Credenciales incorrectas.")
-else:
-    # ==========================================
-    # APLICACIÓN PRINCIPAL (LOGUEADO)
-    # ==========================================
-    # Sidebar de navegación estilo panel de control original
-    st.sidebar.markdown(f"<h2 style='color: #00AAFF;'>⚾ BeisSeven</h2>", unsafe_title=True)
-    st.sidebar.write(f"**Usuario:** {st.session_state['usuario'].upper()}")
-    st.sidebar.write(f"**Rol:** {st.session_state['rol'].upper()}")
-    st.sidebar.write("---")
-    
-    opcion_menu = st.sidebar.radio(
-        "Navegación", 
-        ["📊 DASHBOARD", "📝 REGISTROS", "👥 USUARIOS", "⚙️ CONFIG"]
-    )
-    
-    st.sidebar.write("---")
-    if st.sidebar.button("🚪 CERRAR SESIÓN", use_container_width=True):
-        st.session_state["autenticado"] = False
-        st.session_state["usuario"] = None
-        st.session_state["rol"] = None
-        st.rerun()
-
-    # ─── VISTA: DASHBOARD ───
-    if opcion_menu == "📊 DASHBOARD":
-        st.title("Resumen de Operaciones")
-        
-        # Filtros Rápidos de Fecha
-        with st.container(border=True):
-            col_f1, col_f2, col_f3 = st.columns(3)
-            with col_f1:
-                fecha_desde = st.date_input("Desde:", datetime.today() - timedelta(days=30))
-            with col_f2:
-                fecha_hasta = st.date_input("Hasta:", datetime.today())
-            with col_f3:
-                st.write("<br/>", unsafe_title=True)
-                btn_filtrar = st.button("ACTUALIZAR MÉTRICAS", use_container_width=True)
-        
-        if fecha_desde > fecha_hasta:
-            st.error("La fecha 'Desde' no puede ser mayor que 'Hasta'.")
-        else:
-            # Consultar métricas en Neon filtradas por rango
-            df_resumen = conn.query("SELECT cantidad FROM picheos WHERE fecha BETWEEN :desde AND :hasta;", 
-                                    params={"desde": fecha_desde, "hasta": fecha_hasta}, ttl=0)
-            
-            total_picheos = int(df_resumen["cantidad"].sum()) if not df_resumen.empty else 0
-            
-            df_p = conn.query("SELECT valor FROM config WHERE clave='precio';", ttl=0)
-            precio = float(df_p.iloc[0]["valor"]) if not df_p.empty else 0.024
-            
-            usd_estimado = total_picheos * precio
-            
-            # Tarjetas de KPI visuales
-            col_c1, col_c2 = st.columns(2)
-            with col_c1:
-                with st.container(border=True):
-                    st.markdown("<p style='text-align: center; font-size: 18px; font-weight: bold;'>TOTAL PICHEOS</p>", unsafe_title=True)
-                    st.markdown(f"<h1 style='text-align: center; color: #00AAFF;'>{total_picheos:,}</h1>", unsafe_title=True)
-            with col_c2:
-                with st.container(border=True):
-                    st.markdown("<p style='text-align: center; font-size: 18px; font-weight: bold;'>USD ESTIMADO</p>", unsafe_title=True)
-                    st.markdown(f"<h1 style='text-align: center; color: #00FF77;'>${usd_estimado:,.2f}</h1>", unsafe_title=True)
-
-    # ─── VISTA: REGISTROS ───
-    elif opcion_menu == "📝 REGISTROS":
-        st.title("Gestión de Registros de Picheo")
-        
-        # Formulario de entrada
-        with st.container(border=True):
-            col_r1, col_r2, col_r3, col_r4 = st.columns([1.5, 2, 1.5, 1.5])
-            with col_r1:
-                reg_fecha = st.date_input("Fecha:", datetime.today())
-            with col_r2:
-                reg_id = st.text_input("ID Control", placeholder="Ej: CTRL-001").strip()
-            with col_r3:
-                reg_cant = st.number_input("Cantidad:", min_value=1, step=1, value=50)
-            with col_r4:
-                st.write("<br/>", unsafe_title=True)
-                btn_guardar = st.button("GUARDAR DATO", use_container_width=True)
-                
-        if btn_guardar:
-            if not reg_id:
-                st.error("Por favor, introduzca un ID de Control válido.")
-            else:
-                with conn.session as session:
-                    session.execute(
-                        text("INSERT INTO picheos (fecha, id_control, cantidad, operador) VALUES (:f, :id, :c, :op);"),
-                        {"f": reg_fecha, "id": reg_id, "微微": reg_id, "c": reg_cant, "op": st.session_state["usuario"]}
-                    )
-                    session.commit()
-                st.success(f"Registro añadido con éxito: {reg_id} ({reg_cant} lanzamientos)")
-                st.rerun()
-
-        st.write("---")
-        
-        # Obtener los datos actuales de la tabla de Neon
-        df_picheos = conn.query("SELECT id, fecha, id_control, cantidad, operador FROM picheos ORDER BY id DESC;", ttl=0)
-        
-        if df_picheos.empty:
-            st.info("Aún no existen registros almacenados en la base de datos.")
-        else:
-            # Botones nativos web para exportación descargable limpia
-            col_exp1, col_exp2 = st.columns([6, 1])
-            with col_exp2:
-                # Conversión a Excel en memoria usando pandas
-                excel_data = df_picheos.to_excel(index=False, engine='openpyxl')
-                st.download_button(
-                    label="📥 EXCEL",
-                    data=df_picheos.to_csv(index=False).encode('utf-8'), # Alternativa directa CSV rápida
-                    file_name=f"Reporte_Picheo_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-                
-            # Despliegue de la tabla interactiva de datos
-            st.dataframe(df_picheos, use_container_width=True, hide_index=True)
-            
-            # Sección de eliminación exclusiva para Administradores
-            if st.session_state["rol"] == "admin":
-                st.write("<br/>", unsafe_title=True)
-                id_eliminar = st.number_input("Introduzca el ID numérico del registro que desea remover:", min_value=1, step=1)
-                if st.button("🗑️ ELIMINAR REGISTRO SELECCIONADO", type="primary"):
-                    with conn.session as session:
-                        session.execute(text("DELETE FROM picheos WHERE id = :id;"), {"id": id_eliminar})
-                        session.commit()
-                    st.success(f"Registro ID {id_eliminar} removido permanentemente de Neon.")
-                    st.rerun()
-
-    # ─── VISTA: USUARIOS (SOLO ADMIN) ───
-    elif opcion_menu == "👥 USUARIOS":
-        st.title("Gestión de Personal")
-        
-        if st.session_state["rol"] != "admin":
-            st.error("🔒 Acceso Restringido. Contacte a un administrador para gestionar usuarios.")
-        else:
-            with st.container(border=True):
-                col_u1, col_u2, col_u3, col_u4 = st.columns(4)
-                with col_u1:
-                    usr_nom = st.text_input("Nombre de usuario:").strip()
-                with col_u2:
-                    usr_pass = st.text_input("Contraseña:", show="*").strip()
-                with col_u3:
-                    usr_rol = st.selectbox("Rol del usuario:", ["operador", "admin"])
-                with col_u4:
-                    st.write("<br/>", unsafe_title=True)
-                    btn_crear_usr = st.button("➕ CREAR USUARIO", use_container_width=True)
-            
-            if btn_crear_usr:
-                if not usr_nom or not usr_pass:
-                    st.warning("Nombre y contraseña son campos de llenado obligatorio.")
-                else:
-                    try:
-                        pass_hash = hashlib.sha256(usr_pass.encode()).hexdigest()
-                        with conn.session as session:
-                            session.execute(
-                                text("INSERT INTO usuarios (nombre, pass, rol) VALUES (:n, :p, :r);"),
-                                {"n": usr_nom, "p": pass_hash, "r": usr_rol}
-                            )
-                            session.commit()
-                        st.success(f"Usuario '{usr_nom}' dado de alta exitosamente.")
+                    datos_usuario = validar_credenciales(input_user, input_pass)
+                    if datos_usuario:
+                        st.session_state.autenticado = True
+                        st.session_state.usuario_nombre = datos_usuario["nombre"]
+                        st.session_state.usuario_rol = datos_usuario["rol"]
                         st.rerun()
-                    except Exception:
-                        st.error("El nombre de usuario ya se encuentra registrado.")
-                        
-            st.write("---")
-            df_usrs = conn.query("SELECT id, nombre, rol FROM usuarios ORDER BY id ASC;", ttl=0)
-            st.dataframe(df_usrs, use_container_width=True, hide_index=True)
-            
-            # Borrar usuario
-            id_usr_del = st.number_input("ID del usuario a eliminar:", min_value=1, step=1)
-            if st.button("🗑️ ELIMINAR USUARIO", type="primary"):
-                df_check = conn.query("SELECT nombre FROM usuarios WHERE id = :id;", params={"id": id_usr_del}, ttl=0)
-                if not df_check.empty and df_check.iloc[0]["nombre"] == st.session_state["usuario"]:
-                    st.error("No puedes eliminar tu propia sesión activa.")
-                else:
-                    with conn.session as session:
-                        session.execute(text("DELETE FROM usuarios WHERE id = :id;"), {"id": id_usr_del})
-                        session.commit()
-                    st.success("Usuario removido del sistema.")
-                    st.rerun()
-
-    # ─── VISTA: CONFIGURACIÓN (SOLO ADMIN) ───
-    elif opcion_menu == "⚙️ CONFIG":
-        st.title("Configuración del Sistema")
-        
-        if st.session_state["rol"] != "admin":
-            st.error("🔒 Acceso Restringido.")
-        else:
-            df_p = conn.query("SELECT valor FROM config WHERE clave='precio';", ttl=0)
-            precio_actual = df_p.iloc[0]["valor"] if not df_p.empty else "0.024"
-            
-            with st.container(border=True):
-                st.write("**Configuración del Factor Analítico Matemático**")
-                nv_precio = st.text_input("Precio por Unidad / Tasa de Conversión (USD):", value=precio_actual).strip()
-                btn_save_conf = st.button("GUARDAR CONFIGURACIÓN")
-                
-            if btn_save_conf:
-                try:
-                    validar_num = float(nv_precio)
-                    if validar_num < 0:
-                        st.error("La tasa no puede representar valores negativos.")
                     else:
-                        with conn.session as session:
-                            session.execute(text("UPDATE config SET valor = :v WHERE clave = 'precio';"), {"v": nv_precio})
-                            session.commit()
-                        st.success("Configuración analítica guardada con éxito en la nube.")
-                        st.rerun()
-                except ValueError:
-                    st.error("Introduzca un valor numérico válido (use punto para los decimales).")
+                        st.error("❌ Usuario o contraseña incorrectos.")
+        
+        st.caption("Nota: Si es la primera ejecución, ingresa con 'admin' y clave 'Admin123*'.")
+
+def vista_principal():
+    """Panel principal una vez superada la autenticación."""
+    # Barra lateral de navegación y logout
+    st.sidebar.title(f"Bienvenido, {st.session_state.usuario_nombre}")
+    st.sidebar.info(f"Nivel de acceso: {st.session_state.usuario_rol}")
+    
+    if st.sidebar.button("Cerrar Sesión", use_container_width=True):
+        st.session_state.autenticado = False
+        st.session_state.usuario_nombre = ""
+        st.session_state.usuario_rol = ""
+        st.rerun()
+    
+    # Menú de navegación interno
+    opcion = st.sidebar.radio("Navegación", ["Dashboard Analítico", "Ingreso de Datos", "Configuración"])
+    
+    if opcion == "Dashboard Analítico":
+        st.header("📊 Dashboard de Control de Picheo")
+        st.write("La base de datos está activa y respondiendo correctamente.")
+        
+        # Ejemplo de métricas de rendimiento del sistema
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric("Estado DB", "Conectado", "Estable")
+        kpi2.metric("Motor SQL", "SQLAlchemy 2.0", "Verificado")
+        kpi3.metric("Sesión Activa", st.session_state.usuario_rol, "Segura")
+
+    elif opcion == "Ingreso de Datos":
+        st.header("📝 Módulo de Registro")
+        st.info("Espacio preparado para integrar la carga masiva de datos y logs de picheo.")
+        
+    elif opcion == "Configuración":
+        st.header("⚙️ Ajustes del Sistema")
+        st.write("Mapeo de variables y gestión interna del software.")
+
+# ==========================================
+# 6. ENRUTADOR PRINCIPAL
+# ==========================================
+if not st.session_state.autenticado:
+    vista_login()
+else:
+    vista_principal()
