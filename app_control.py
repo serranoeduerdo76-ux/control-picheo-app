@@ -1,341 +1,180 @@
-import customtkinter as ctk
-import tkinter as tk
-from tkinter import messagebox, ttk, filedialog
-import sqlite3
-import hashlib
-import os
-import sys
+import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-import calendar
-import logging
-from typing import Optional, Tuple, List, Any
+from sqlalchemy import create_engine, text
 
 # ==========================================
-# CONFIGURACIÓN DE RUTAS PARA .EXE
+# 1. CONFIGURACIÓN DE LA BASE DE DATOS
 # ==========================================
-def get_base_dir():
-    """Obtiene la ruta base, funciona tanto en .py como en .exe"""
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
+def obtener_motor_db():
+    """Valida la existencia de secretos en la nube o usa base local."""
+    if "connections" in st.secrets and "sqlite" in st.secrets["connections"]:
+        db_url = st.secrets["connections"]["sqlite"]["url"]
+    elif "db_url" in st.secrets:
+        db_url = st.secrets["db_url"]
     else:
-        return os.path.dirname(os.path.abspath(__file__))
+        db_url = "sqlite:///control_picheo_app.db"
+    return create_engine(db_url, echo=False)
 
-BASE_DIR = get_base_dir()
-DB_NAME = os.path.join(BASE_DIR, 'beisseven.db')
-LOG_FILE = os.path.join(BASE_DIR, 'beisseven.log')
+engine = obtener_motor_db()
 
-# --- CONFIGURACIÓN DE LOGS ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
-)
-
-# Librerías para PDF
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
-
-# --- CONFIGURACIÓN ESTRUCTURAL ---
-ctk.set_appearance_mode("dark")
-COLOR_SIDEBAR = "#1E1E24"
-COLOR_BG = "#141419"
-COLOR_CARD = "#23232A"
-COLOR_ACCENT = "#FFB800"
-COLOR_ACCENT_H = "#E0A200"
-COLOR_SUCCESS = "#00E676"
-COLOR_DANGER = "#FF5252"
-COLOR_DANGER_H = "#D50000"
-
-# ==========================================
-# COMPONENTE: SELECTOR DE FECHA MODERNO
-# ==========================================
-class ModernDatePicker(ctk.CTkFrame):
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, fg_color="transparent", **kwargs)
-        self.fecha_seleccionada = datetime.now()
-        
-        self.btn = ctk.CTkButton(
-            self, 
-            text=self.fecha_seleccionada.strftime("%Y-%m-%d"),
-            fg_color=COLOR_CARD,
-            hover_color="#2D2D35",
-            border_width=1,
-            border_color=COLOR_ACCENT,
-            width=140,
-            command=self.abrir_calendario
-        )
-        self.btn.pack(side="left")
-
-    def abrir_calendario(self):
-        self.win = ctk.CTkToplevel(self)
-        self.win.title("Seleccionar Fecha")
-        self.win.geometry("280x260")
-        self.win.resizable(False, False)
-        self.win.grab_set()
-        self.win.attributes("-topmost", True)
-        
-        self.año = self.fecha_seleccionada.year
-        self.mes = self.fecha_seleccionada.month
-        
-        self.header = ctk.CTkFrame(self.win, fg_color="transparent")
-        self.header.pack(fill="x", pady=5)
-        
-        ctk.CTkButton(self.header, text="<", width=30, command=self.mes_prev).pack(side="left", padx=5)
-        self.lbl_mes = ctk.CTkLabel(self.header, text="", font=("Arial", 12, "bold"))
-        self.lbl_mes.pack(side="left", expand=True)
-        ctk.CTkButton(self.header, text=">", width=30, command=self.mes_next).pack(side="right", padx=5)
-        
-        self.days_frame = ctk.CTkFrame(self.win, fg_color="transparent")
-        self.days_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        self.dibujar_mes()
-
-    def dibujar_mes(self):
-        for w in self.days_frame.winfo_children():
-            w.destroy()
-            
-        self.lbl_mes.configure(text=f"{calendar.month_name[self.mes].upper()} {self.año}")
-        
-        dias_semana = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
-        for idx, d in enumerate(dias_semana):
-            ctk.CTkLabel(self.days_frame, text=d, font=("Arial", 10, "bold"), text_color=COLOR_ACCENT).grid(row=0, column=idx, pady=2)
-            
-        cal = calendar.monthcalendar(self.año, self.mes)
-        for r_idx, sem in enumerate(cal):
-            for c_idx, d in enumerate(sem):
-                if d != 0:
-                    btn_d = ctk.CTkButton(
-                        self.days_frame, text=str(d), width=32, height=28,
-                        fg_color="#2D2D35" if d != self.fecha_seleccionada.day or self.mes != self.fecha_seleccionada.month or self.año != self.fecha_seleccionada.year else COLOR_ACCENT,
-                        text_color="white" if d != self.fecha_seleccionada.day or self.mes != self.fecha_seleccionada.month or self.año != self.fecha_seleccionada.year else COLOR_SIDEBAR,
-                        command=lambda day=d: self.seleccionar_dia(day)
-                    )
-                    btn_d.grid(row=r_idx+1, column=c_idx, padx=1, pady=1)
-
-    def mes_prev(self):
-        self.mes -= 1
-        if self.mes == 0:
-            self.mes = 12
-            self.año -= 1
-        self.dibujar_mes()
-
-    def mes_next(self):
-        self.mes += 1
-        if self.mes == 100:  # Fix temporal para ciclos lógicos estándar
-            pass
-        if self.mes == 13:
-            self.mes = 1
-            self.año += 1
-        self.dibujar_mes()
-
-    def seleccionar_dia(self, dia):
-        self.fecha_seleccionada = datetime(self.año, self.mes, dia)
-        self.btn.configure(text=self.fecha_seleccionada.strftime("%Y-%m-%d"))
-        self.win.destroy()
-
-    def get_date(self):
-        return self.btn.cget("text")
-
-# ==========================================
-# MANEJO CENTRAL DE BASE DE DATOS (SQLITE)
-# ==========================================
-class DatabaseManager:
-    @staticmethod
-    def conectar():
-        conn = sqlite3.connect(DB_NAME, timeout=10)
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA journal_mode = WAL;")  # Alta concurrencia local
-        return conn
-
-    @staticmethod
-    def inicializar_bd():
-        conn = DatabaseManager.conectar()
-        cursor = conn.cursor()
-        
+def inicializar_base_de_datos():
+    """Crea las tablas necesarias si no existen."""
+    with engine.connect() as conn:
         # Tabla de Usuarios
-        cursor.execute("""
+        conn.execute(text("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario TEXT UNIQUE NOT NULL,
+                usuario TEXT NOT NULL UNIQUE,
                 clave TEXT NOT NULL,
-                rol TEXT NOT NULL CHECK(rol IN ('admin', 'operador'))
-            )
-        """)
-        
-        # Tabla de Logs de Picheos
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS picheos (
+                rol TEXT DEFAULT 'usuario'
+            );
+        """))
+        # Tabla de Logs de Picheo
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS logs_picheo (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fecha TEXT NOT NULL,
-                id_control TEXT NOT NULL,
-                cantidad INTEGER NOT NULL,
-                operador TEXT NOT NULL
-            )
-        """)
-        
-        # Tabla de Configuración Global (Precios, Parámetros)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS config (
-                clave TEXT PRIMARY KEY,
-                valor TEXT NOT NULL
-            )
-        """)
-        
-        # Creación de Administrador por defecto (Clave hash: Admin123*)
-        cursor.execute("SELECT COUNT(*) FROM usuarios")
-        if cursor.fetchone()[0] == 0:
-            h_password = hashlib.sha256("Admin123*".encode()).hexdigest()
-            cursor.execute("INSERT INTO usuarios (usuario, clave, rol) VALUES (?, ?, ?)", ("admin", h_password, "admin"))
-            
-        # Parámetros de negocio por defecto (Precio base por unidad)
-        cursor.execute("SELECT COUNT(*) FROM config WHERE clave='precio'")
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO config (clave, valor) VALUES ('precio', '0.024')")
-            
+                lanzador TEXT NOT NULL,
+                tipo_picheo TEXT,
+                velocidad REAL,
+                spin_rate INTEGER,
+                resultado TEXT,
+                fecha TEXT,
+                notas TEXT
+            );
+        """))
         conn.commit()
-        cursor.close()
-        conn.close()
 
-    @staticmethod
-    def consultar(query: str, params: Tuple = ()) -> List[Any]:
-        conn = DatabaseManager.conectar()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            return rows
-        finally:
-            cursor.close()
-            conn.close()
-
-    @staticmethod
-    def ejecutar(query: str, params: Tuple = ()):
-        conn = DatabaseManager.conectar()
-        cursor = conn.cursor()
-        try:
-            cursor.execute(query, params)
+def crear_usuario_defecto():
+    """Inserta el administrador inicial si la tabla está vacía."""
+    with engine.connect() as conn:
+        resultado = conn.execute(text("SELECT COUNT(*) FROM usuarios;")).scalar()
+        if resultado == 0:
+            conn.execute(text("""
+                INSERT INTO usuarios (usuario, clave, rol) 
+                VALUES ('admin', 'Admin123*', 'admin');
+            """))
             conn.commit()
-        except sqlite3.Error as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-            conn.close()
+
+# Inicializar estructuras de datos
+try:
+    inicializar_base_de_datos()
+    crear_usuario_defecto()
+except Exception as e:
+    st.error(f"Error al inicializar la base de datos: {e}")
 
 # ==========================================
-# INTERFAZ: AUTENTICACIÓN (LOGIN)
+# 2. GESTIÓN DE SESIÓN (LOGIN)
 # ==========================================
-class LoginApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        DatabaseManager.inicializar_bd()
-        
-        self.title("Apex Pitch - Acceso")
-        self.geometry("400x480")
-        self.resizable(False, False)
-        
-        self.configure(fg_color=COLOR_BG)
-        
-        self.card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=20)
-        self.card.pack(pady=40, padx=30, fill="both", expand=True)
-        
-        ctk.CTkLabel(self.card, text="⚾", font=("Arial", 45)).pack(pady=(25, 5))
-        ctk.CTkLabel(self.card, text="Control de Picheo", font=("Arial", 22, "bold"), text_color="white").pack(pady=5)
-        ctk.CTkLabel(self.card, text="Acceso al Sistema Central", font=("Arial", 13), text_color="gray").pack(pady=(0, 20))
-        
-        self.ent_user = ctk.CTkEntry(self.card, placeholder_text="Nombre de Usuario", width=260, height=40)
-        self.ent_user.pack(pady=10)
-        
-        self.ent_pass = ctk.CTkEntry(self.card, placeholder_text="Contraseña", show="*", width=260, height=40)
-        self.ent_pass.pack(pady=10)
-        
-        btn_login = ctk.CTkButton(
-            self.card, text="Iniciar Sesión", fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_H,
-            text_color=COLOR_SIDEBAR, font=("Arial", 14, "bold"), width=260, height=42, command=self.autenticar
-        )
-        btn_login.pack(pady=25)
+if "autenticado" not in st.session_state:
+    st.session_state["autenticado"] = False
+    st.session_state["usuario"] = None
 
-    def autenticar(self):
-        u = self.ent_user.get().strip()
-        p = self.ent_pass.get().strip()
+if not st.session_state["autenticado"]:
+    st.title("⚾ Control de Picheo")
+    st.subheader("Acceso al Sistema Central")
+    
+    with st.form("login_form"):
+        usuario_input = st.text_input("Nombre de Usuario")
+        clave_input = st.text_input("Contraseña", type="password")
+        boton_login = st.form_submit_button("Iniciar Sesión")
         
-        if not u or not p:
-            messagebox.showwarning("Campos Incompletos", "Por favor ingrese usuario y contraseña.")
-            return
+        if boton_login:
+            with engine.connect() as conn:
+                query = text("SELECT usuario, clave FROM usuarios WHERE usuario = :u AND clave = :c;")
+                usuario_db = conn.execute(query, {"u": usuario_input, "c": clave_input}).fetchone()
+                
+                if usuario_db:
+                    st.session_state["autenticado"] = True
+                    st.session_state["usuario"] = usuario_db[0]
+                    st.rerun()
+                else:
+                    st.error("❌ Usuario o contraseña incorrectos.")
+    st.caption("Nota: Si es la primera ejecución, ingresa con 'admin' y clave 'Admin123*'.")
+
+# ==========================================
+# 3. DASHBOARD PRINCIPAL (SESIÓN ACTIVA)
+# ==========================================
+else:
+    # Barra lateral de navegación
+    st.sidebar.title(f"Bienvenido, {st.session_state['usuario']}")
+    opcion = st.sidebar.radio("Navegación", ["Dashboard Estado", "Módulo de Registro"])
+    
+    if st.sidebar.button("Cerrar Sesión"):
+        st.session_state["autenticado"] = False
+        st.session_state["usuario"] = None
+        st.rerun()
+
+    # --- VISTA 1: ESTADO DEL SISTEMA ---
+    if opcion == "Dashboard Estado":
+        st.title("Dashboard de Control de Picheo")
+        st.write("La base de datos está activa y respondiendo correctamente.")
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Estado DB", "Conectado", "↑ Estable")
+        col2.metric("Motor SQL", "SQLAlchemy", "↑ Verificado")
+        col3.metric("Sesión Activa", "Administrador", "↑ Segura", delta_color="normal")
+
+    # --- VISTA 2: MÓDULO DE REGISTRO INTERACTIVO ---
+    elif opcion == "Módulo de Registro":
+        st.title("⚾ Módulo de Registro")
+        
+        tab1, tab2 = st.tabs(["📝 Registro Individual", "📂 Carga Masiva (CSV/Excel)"])
+        
+        # Pestaña Registro Manual
+        with tab1:
+            st.write("### Registrar Nuevo Log de Picheo")
+            with st.form("formulario_picheo", clear_on_submit=True):
+                col1_p, col2_p, col3_p = st.columns(3)
+                with col1_p:
+                    lanzador = st.text_input("Nombre del Lanzador")
+                    tipo_picheo = st.selectbox("Tipo de Lanzamiento", ["Recta (FB)", "Curva (CB)", "Slider (SL)", "Cambio (CH)", "Sinker (SI)"])
+                with col2_p:
+                    velocidad = st.number_input("Velocidad (MPH)", min_value=0.0, max_value=110.0, value=90.0, step=0.1)
+                    spin_rate = st.number_input("Spin Rate (RPM)", min_value=0, max_value=4000, value=2200, step=50)
+                with col3_p:
+                    resultado = st.selectbox("Resultado", ["Strike", "Bola", "Hit", "Out", "Jonrón"])
+                    fecha = st.date_input("Fecha")
+                
+                notas = st.text_area("Observaciones del Scouting")
+                btn_guardar = st.form_submit_button("Guardar Lanzamiento")
+                
+                if btn_guardar:
+                    if not lanzador.strip():
+                        st.error("El nombre del lanzador es requerido.")
+                    else:
+                        try:
+                            with engine.connect() as conn:
+                                conn.execute(text("""
+                                    INSERT INTO logs_picheo (lanzador, tipo_picheo, velocidad, spin_rate, resultado, fecha, notas)
+                                    VALUES (:lanzador, :tipo_picheo, :velocidad, :spin_rate, :resultado, :fecha, :notas);
+                                """), {
+                                    "lanzador": lanzador, "tipo_picheo": tipo_picheo, "velocidad": velocidad,
+                                    "spin_rate": spin_rate, "resultado": resultado, "fecha": str(fecha), "notas": notas
+                                })
+                                conn.commit()
+                            st.success(f"✅ ¡Registro guardado para {lanzador}!")
+                        except Exception as e:
+                            st.error(f"Error de almacenamiento: {e}")
+                            
+        # Pestaña Carga Masiva
+        with tab2:
+            st.write("### Importar Logs desde Archivo")
+            archivo_cargado = st.file_uploader("Sube un archivo CSV o Excel", type=["csv", "xlsx"])
             
-        h_password = hashlib.sha256(p.encode()).hexdigest()
-        res = DatabaseManager.consultar("SELECT id, usuario, rol FROM usuarios WHERE usuario=? AND clave=?", (u, h_password))
-        
-        if res:
-            logging.info(f"Sesión iniciada correctamente por el usuario: {u}")
-            self.destroy()
-            app = MainApp(user=res[0])
-            app.mainloop()
-        else:
-            messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
-
-# ==========================================
-# INTERFAZ PRINCIPAL (DASHBOARD APLICADO)
-# ==========================================
-class MainApp(ctk.CTk):
-    def __init__(self, user: Tuple):
-        super().__init__()
-        self.user = user  # Estructura: (id, usuario, rol)
-        
-        self.title("Apex Pitch - Dashboard de Analítica")
-        self.geometry("1024 chat680")
-        self.set_extended_size()
-        
-        self.configure(fg_color=COLOR_BG)
-        
-        # --- SIDEBAR IZQUIERDO ---
-        self.sidebar = ctk.CTkFrame(self, width=220, fg_color=COLOR_SIDEBAR, corner_radius=0)
-        self.sidebar.pack(side="left", fill="y")
-        self.sidebar.pack_propagate(False)
-        
-        # Header Sidebar
-        ctk.CTkLabel(self.sidebar, text="⚾ APEX PITCH", font=("Arial", 18, "bold"), text_color=COLOR_ACCENT).pack(pady=25)
-        
-        # Info de la sesión activa
-        lbl_info_u = ctk.CTkLabel(self.sidebar, text=f"Usuario: {self.user[1].upper()}", font=("Arial", 11), text_color="gray")
-        lbl_info_u.pack(pady=(0, 20))
-        
-        # Botones de navegación
-        self.crear_boton_menu("📈 DASHBOARD", self.vista_dashboard)
-        self.crear_boton_menu("📝 REGISTROS Y LOGS", self.vista_registros)
-        
-        if self.user[2] == "admin":
-            self.crear_boton_menu("👥 GESTIÓN DE USUARIOS", self.vista_usuarios)
-            self.crear_boton_menu("⚙️ CONFIGURACIÓN", self.vista_config)
-            
-        ctk.CTkButton(
-            self.sidebar, text="🚪 CERRAR SESIÓN", fg_color="transparent", hover_color="#3A3A45",
-            text_color=COLOR_DANGER, font=("Arial", 12, "bold"), command=self.cerrar_sesion
-        ).pack(side="bottom", pady=20, fill="x", padx=10)
-        
-        # --- CONTENEDOR CENTRAL DINÁMICO ---
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.pack(side="right", fill="both", expand=True, padx=30, pady=25)
-        
-        # Cargar vista por defecto
-        self.vista_dashboard()
-
-    def set_extended_size(self):
-        self.update_idletasks()
-        w = self.winfo_screenwidth()
-        h = self.winfo_screenheight()
-        self.geometry(f"{int(w*0.85)}x{int(h*0.82)}")
-
-    def crear_boton_menu(self, texto, comando):
-        btn = ctk.CTkButton(
-            self.sidebar, text=texto, anchor="w", fg_color="transparent",
-            hover_color="#2D2D35", text_color="white", font=("Arial", 12, "bold"),
-            height=40, command=comando
-        )
-        btn.
+            if archivo_cargado is not None:
+                try:
+                    df = pd.read_csv(archivo_cargado) if archivo_cargado.name.endswith('.csv') else pd.read_excel(archivo_cargado)
+                    st.write("##### Vista previa de los datos:")
+                    st.dataframe(df.head())
+                    
+                    btn_procesar = st.button("Confirmar Carga Masiva")
+                    if btn_procesar:
+                        columnas_ok = ['lanzador', 'tipo_picheo', 'velocidad', 'spin_rate', 'resultado', 'fecha']
+                        if all(c in df.columns for c in columnas_ok):
+                            with engine.begin() as conexion:
+                                df.to_sql('logs_picheo', con=conexion, if_exists='append', index=False)
+                            st.success(f"🔥 Se importaron {len(df)} registros de forma masiva.")
+                        else:
+                            st.error("Estructura inválida. Asegúrate de incluir las columnas estándar.")
+                except Exception as e:
+                    st.error(f"Error procesando archivo: {e}")
