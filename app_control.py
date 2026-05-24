@@ -29,7 +29,6 @@ def inicializar_motor_seguro():
 
 engine = inicializar_motor_seguro()
 IS_POSTGRES = "postgres" in engine.drivername or "postgresql" in engine.drivername
-
 def inicializar_base_de_datos():
     """Crea las estructuras analíticas adaptando los tipos de datos al motor activo."""
     serial_type = "SERIAL" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
