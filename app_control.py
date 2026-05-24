@@ -1,18 +1,19 @@
 import streamlit as st
+from sqlalchemy import text
 
 # 1. Conexión segura a tu base de datos de Neon
 conn = st.connection("postgresql", type="sql")
 
-# 2. Creación automática de la tabla si no existe
+# 2. Creación automática de la tabla usando text() para corregir el error
 with conn.session as session:
-    session.execute("""
+    session.execute(text("""
         CREATE TABLE IF NOT EXISTS mis_datos_neon (
             id SERIAL PRIMARY KEY,
             nombre TEXT NOT NULL,
             cantidad INTEGER,
             notas TEXT
         );
-    """)
+    """))
     session.commit()
 
 st.title("Mi Aplicación con Base de Datos Neon")
@@ -27,17 +28,17 @@ with st.form("formulario_ingreso"):
     
     boton_enviar = st.form_submit_button("Guardar en la Base de Datos")
 
-# 4. Guardar la información al presionar el botón
+# 4. Guardar la información al presionar el botón usando text()
 if boton_enviar:
     if nombre_registro == "":
         st.error("El campo 'Nombre' no puede estar vacío.")
     else:
         with conn.session as session:
             session.execute(
-                """
+                text("""
                 INSERT INTO mis_datos_neon (nombre, cantidad, notas) 
                 VALUES (:nombre, :cantidad, :notas);
-                """,
+                """),
                 {"nombre": nombre_registro, "cantidad": cantidad_registro, "notas": notas_registro}
             )
             session.commit()
