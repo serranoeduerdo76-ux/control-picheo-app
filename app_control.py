@@ -15,7 +15,7 @@ st.set_page_config(page_title="Apex Pitch - Control", layout="wide", initial_sid
 def inicializar_motor_seguro():
     """
     Detecta automáticamente si existe una conexión PostgreSQL en Secrets.
-    Si no existe, cae de forma segura a SQLite local.
+    Si no existe, cae de forma segura a SQLite local con un archivo limpio.
     """
     if "connections" in st.secrets and "postgres" in st.secrets["connections"]:
         db_url = st.secrets["connections"]["postgres"]["url"]
@@ -23,12 +23,13 @@ def inicializar_motor_seguro():
     elif "db_url" in st.secrets:
         return create_engine(st.secrets["db_url"])
     else:
-        return create_engine("sqlite:///control_picheo_app.db", connect_args={"timeout": 30})
+        # Usamos un nombre nuevo para garantizar que la base de datos se cree desde cero sin conflictos previos
+        return create_engine("sqlite:///beisseven_prod.db", connect_args={"timeout": 30})
 
 # Inicializamos el motor físico de la base de datos
 engine = inicializar_motor_seguro()
 
-# Acceso al dialecto mediante el atributo 'url'
+# Acceso seguro al dialecto mediante la URL (Soporte SQLAlchemy 2.0+)
 IS_POSTGRES = "postgres" in engine.url.drivername or "postgresql" in engine.url.drivername
 
 def inicializar_base_de_datos():
@@ -36,7 +37,6 @@ def inicializar_base_de_datos():
     serial_type = "SERIAL" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     pk_constraint = "PRIMARY KEY" if IS_POSTGRES else ""
 
-    # 'engine.begin()' asegura un commit automático y cierra la transacción al salir del bloque
     with engine.begin() as conn:
         # Tabla de Usuarios
         conn.execute(text(f"""
@@ -85,7 +85,7 @@ def preparar_datos_defecto():
                 hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
                 conn.execute(text("INSERT OR IGNORE INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
 
-# Forzar la creación estructural y carga inicial antes de renderizar la UI
+# Forzar la creación estructural y carga inicial antes de renderizar la interfaz
 try:
     inicializar_base_de_datos()
     preparar_datos_defecto()
@@ -117,7 +117,7 @@ if not st.session_state["autenticado"]:
                         query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
                         usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
                         
-                        # Verificación segura utilizando hashes de bcrypt
+                        # Verificación utilizando hashes de bcrypt
                         if usuario_db and bcrypt.checkpw(clave_input.encode('utf-8'), usuario_db[1].encode('utf-8')):
                             st.session_state["autenticado"] = True
                             st.session_state["usuario"] = usuario_db[0]
