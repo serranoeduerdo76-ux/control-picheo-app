@@ -28,15 +28,16 @@ def inicializar_motor_seguro():
 # Inicializamos el motor físico de la base de datos
 engine = inicializar_motor_seguro()
 
-# CORRECCIÓN EN SQLALCHEMY 2.0: Acceso al dialecto mediante el atributo 'url'
+# Acceso al dialecto mediante el atributo 'url'
 IS_POSTGRES = "postgres" in engine.url.drivername or "postgresql" in engine.url.drivername
 
 def inicializar_base_de_datos():
-    """Crea las estructuras analíticas adaptando los tipos de datos al motor activo."""
+    """Crea las estructuras analíticas utilizando bloques de transacción segura (begin)."""
     serial_type = "SERIAL" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     pk_constraint = "PRIMARY KEY" if IS_POSTGRES else ""
 
-    with engine.connect() as conn:
+    # 'engine.begin()' asegura un commit automático y cierra la transacción al salir del bloque
+    with engine.begin() as conn:
         # Tabla de Usuarios
         conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS usuarios (
@@ -65,11 +66,10 @@ def inicializar_base_de_datos():
                 valor TEXT NOT NULL
             );
         """))
-        conn.commit()
 
 def preparar_datos_defecto():
     """Garantiza los parámetros de arranque financiero y usuario maestro."""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         if IS_POSTGRES:
             conn.execute(text("INSERT INTO config (clave, valor) VALUES ('precio', '0.024') ON CONFLICT (clave) DO NOTHING;"))
             
@@ -84,9 +84,8 @@ def preparar_datos_defecto():
                 salt = bcrypt.gensalt()
                 hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
                 conn.execute(text("INSERT OR IGNORE INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
-        
-        conn.commit()
 
+# Forzar la creación estructural y carga inicial antes de renderizar la UI
 try:
     inicializar_base_de_datos()
     preparar_datos_defecto()
@@ -113,18 +112,21 @@ if not st.session_state["autenticado"]:
         
         if boton_login:
             if usuario_input and clave_input:
-                with engine.connect() as conn:
-                    query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
-                    usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
-                    
-                    # Verificación segura utilizando hashes de bcrypt
-                    if usuario_db and bcrypt.checkpw(clave_input.encode('utf-8'), usuario_db[1].encode('utf-8')):
-                        st.session_state["autenticado"] = True
-                        st.session_state["usuario"] = usuario_db[0]
-                        st.session_state["rol"] = usuario_db[2]
-                        st.rerun()
-                    else:
-                        st.error("❌ Credenciales inválidas o acceso denegado.")
+                try:
+                    with engine.connect() as conn:
+                        query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
+                        usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
+                        
+                        # Verificación segura utilizando hashes de bcrypt
+                        if usuario_db and bcrypt.checkpw(clave_input.encode('utf-8'), usuario_db[1].encode('utf-8')):
+                            st.session_state["autenticado"] = True
+                            st.session_state["usuario"] = usuario_db[0]
+                            st.session_state["rol"] = usuario_db[2]
+                            st.rerun()
+                        else:
+                            st.error("❌ Credenciales inválidas o acceso denegado.")
+                except Exception as e:
+                    st.error(f"Error de comunicación con el almacén de datos: {e}")
             else:
                 st.warning("Por favor, rellene todos los campos de autenticación.")
     st.caption("Aviso del Sistema: Credenciales maestras iniciales: 'admin' / 'admin123'.")
@@ -213,14 +215,13 @@ else:
                         st.error("Error de campo: 'ID Control' no puede procesarse vacío.")
                     else:
                         try:
-                            with engine.connect() as conn:
+                            with engine.begin() as conn:
                                 conn.execute(text("""
                                     INSERT INTO picheos (fecha, id_control, cantidad, operador)
                                     VALUES (:f, :id, :c, :o);
                                 """), {
                                     "f": reg_fecha.strftime('%Y-%m-%d'), "id": reg_id, "c": reg_cant, "o": st.session_state["usuario"]
                                 })
-                                conn.commit()
                             st.success(f"💾 Registro guardado: ID [{reg_id}] — ({reg_cant}) picheos.")
                         except Exception as e:
                             st.error(f"Fallo de persistencia en almacenamiento: {e}")
@@ -290,13 +291,12 @@ else:
                         if st.session_state["rol"] != 'admin':
                             st.error("Acceso Restringido: Operadores no poseen permisos de destrucción de logs.")
                         else:
-                            with engine.connect() as conn:
+                            with engine.begin() as conn:
                                 existe = conn.execute(text("SELECT COUNT(*) FROM picheos WHERE id = :id;"), {"id": id_eliminar}).scalar()
                                 if existe == 0:
                                     st.warning(f"ID [{id_eliminar}] no localizado.")
                                 else:
                                     conn.execute(text("DELETE FROM picheos WHERE id = :id;"), {"id": id_eliminar})
-                                    conn.commit()
                                     st.success(f"Registro [{id_eliminar}] eliminado.")
                                     st.rerun()
             else:
@@ -329,15 +329,13 @@ else:
                     st.warning("La contraseña debe tener mínimo 6 caracteres por seguridad.")
                 else:
                     try:
-                        # Implementación del cifrado seguro Bcrypt
                         salt = bcrypt.gensalt()
                         hash_nueva_clave = bcrypt.hashpw(n_clave.encode('utf-8'), salt).decode('utf-8')
                         
-                        with engine.connect() as conn:
+                        with engine.begin() as conn:
                             conn.execute(text("""
                                 INSERT INTO usuarios (nombre, pass, rol) VALUES (:n, :p, :r);
                             """), {"n": n_usuario, "p": hash_nueva_clave, "r": n_rol})
-                            conn.commit()
                         st.success(f"Usuario registrado: `{n_usuario}`.")
                     except Exception as e:
                         st.error(f"El identificador ya se encuentra registrado. ({e})")
@@ -353,7 +351,7 @@ else:
             st.write("##### Baja de Cuenta")
             id_baja = st.number_input("ID de Cuenta a Eliminar:", min_value=1, step=1)
             if st.button("ELIMINAR OPERADOR", use_container_width=True):
-                with engine.connect() as conn:
+                with engine.begin() as conn:
                     usuario_db = conn.execute(text("SELECT nombre FROM usuarios WHERE id = :id;"), {"id": id_baja}).fetchone()
                     if not usuario_db:
                         st.warning("El ID especificado no pertenece a ningún operador.")
@@ -363,7 +361,6 @@ else:
                         st.error("El administrador maestro no puede darse de baja.")
                     else:
                         conn.execute(text("DELETE FROM usuarios WHERE id = :id;"), {"id": id_baja})
-                        conn.commit()
                         st.success(f"Cuenta `{usuario_db[0]}` eliminada.")
                         st.rerun()
         except Exception as e:
@@ -390,9 +387,8 @@ else:
                         if valor_validado < 0:
                             st.error("El precio unitario no puede constituir un número negativo.")
                         else:
-                            with engine.connect() as conn:
+                            with engine.begin() as conn:
                                 conn.execute(text("UPDATE config SET valor = :v WHERE clave = 'precio';"), {"v": str(valor_validado)})
-                                conn.commit()
                             st.success(f"Ajuste aplicado: Nueva tasa global fijada en ${valor_validado} USD.")
                             st.rerun()
                     except ValueError:
