@@ -99,51 +99,51 @@ if "autenticado" not in st.session_state:
     st.session_state["rol"] = None
 
 # ==========================================
-# 2. SISTEMA DE AUTENTICACIÓN CON BYPASS DE SEGURIDAD
+# 2. SISTEMA DE AUTENTICACIÓN CON ENTRADA DIRECTA (INMUNE A CACHÉ)
 # ==========================================
 if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
-    st.subheader("Acceso Protegido por Infraestructura Segura")
+    st.subheader("Acceso Protegido por Infraestructura Securizada")
     
-    with st.form("login_form", clear_on_submit=False):
-        usuario_input = st.text_input("Nombre de Usuario").strip().lower()
-        clave_input = st.text_input("Contraseña", type="password").strip()
-        boton_login = st.form_submit_button("INGRESAR")
-        
-        if boton_login:
-            if usuario_input and clave_input:
-                # BYPASS DE CONTROL INMUTABLE: Si la base de datos está bloqueada por caché, esto rompe el muro.
-                if usuario_input == "admin" and clave_input == "admin123":
-                    st.session_state["autenticado"] = True
-                    st.session_state["usuario"] = "admin"
-                    st.session_state["rol"] = "admin"
-                    st.success("🔑 Acceso Maestro Concedido. Redirigiendo...")
-                    st.rerun()
-                else:
-                    # Validación estándar para otros usuarios agregados a la base de datos
-                    try:
-                        with engine.connect() as conn:
-                            query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
-                            usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
-                        
-                        if usuario_db:
-                            input_hash = hashlib.sha256(clave_input.encode('utf-8')).hexdigest()
-                            db_hash = usuario_db[1]
-                            
-                            if input_hash == db_hash:
-                                st.session_state["autenticado"] = True
-                                st.session_state["usuario"] = usuario_db[0]
-                                st.session_state["rol"] = usuario_db[2]
-                                st.success("🔑 Conexión exitosa. Redirigiendo...")
-                                st.rerun()
-                            else:
-                                st.error("❌ Contraseña incorrecta.")
-                        else:
-                            st.error("❌ El nombre de usuario no existe.")
-                    except Exception as e:
-                        st.error(f"Error de comunicación con el almacén de datos: {e}")
+    # Eliminación de st.form para evitar el refresco destructivo de variables de estado
+    usuario_input = st.text_input("Nombre de Usuario", key="usr_input").strip().lower()
+    clave_input = st.text_input("Contraseña", type="password", key="pwd_input").strip()
+    boton_login = st.button("INGRESAR", use_container_width=True)
+    
+    if boton_login:
+        if usuario_input and clave_input:
+            # BYPASS DE CONTROL INMUTABLE: Si la base de datos está bloqueada por caché, esto rompe el muro.
+            if usuario_input == "admin" and clave_input == "admin123":
+                st.session_state["autenticado"] = True
+                st.session_state["usuario"] = "admin"
+                st.session_state["rol"] = "admin"
+                st.success("🔑 Acceso Maestro Concedido. Redirigiendo...")
+                st.rerun()
             else:
-                st.warning("Por favor, rellene todos los campos de autenticación.")
+                # Validación estándar para otros usuarios agregados a la base de datos
+                try:
+                    with engine.connect() as conn:
+                        query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
+                        usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
+                    
+                    if usuario_db:
+                        input_hash = hashlib.sha256(clave_input.encode('utf-8')).hexdigest()
+                        db_hash = usuario_db[1]
+                        
+                        if input_hash == db_hash:
+                            st.session_state["autenticado"] = True
+                            st.session_state["usuario"] = usuario_db[0]
+                            st.session_state["rol"] = usuario_db[2]
+                            st.success("🔑 Conexión exitosa. Redirigiendo...")
+                            st.rerun()
+                        else:
+                            st.error("❌ Contraseña incorrecta.")
+                    else:
+                        st.error("❌ El nombre de usuario no existe.")
+                except Exception as e:
+                    st.error(f"Error de comunicación con el almacén de datos: {e}")
+        else:
+            st.warning("Por favor, rellene todos los campos de autenticación.")
     st.caption("Aviso del Sistema: Credenciales maestras iniciales: 'admin' / 'admin123'.")
 
 # ==========================================
