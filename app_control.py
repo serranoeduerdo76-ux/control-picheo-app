@@ -99,20 +99,24 @@ if "autenticado" not in st.session_state:
     st.session_state["rol"] = None
 
 # ==========================================
-# 2. SISTEMA DE AUTENTICACIÓN CON ENTRADA DIRECTA (INMUNE A CACHÉ)
+# 2. SISTEMA DE AUTENTICACIÓN CON CAPTURA DE ESTADO ESTÁTICO
 # ==========================================
 if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
     st.subheader("Acceso Protegido por Infraestructura Securizada")
     
-    # Eliminación de st.form para evitar el refresco destructivo de variables de estado
-    usuario_input = st.text_input("Nombre de Usuario", key="usr_input").strip().lower()
-    clave_input = st.text_input("Contraseña", type="password", key="pwd_input").strip()
+    # Al usar st.session_state de forma explícita en las claves, el texto introducido sobrevive a los reruns involuntarios
+    st.text_input("Nombre de Usuario", key="usuario_memoria")
+    st.text_input("Contraseña", type="password", key="clave_memoria")
+    
     boton_login = st.button("INGRESAR", use_container_width=True)
     
     if boton_login:
+        usuario_input = st.session_state["usuario_memoria"].strip().lower()
+        clave_input = st.session_state["clave_memoria"].strip()
+        
         if usuario_input and clave_input:
-            # BYPASS DE CONTROL INMUTABLE: Si la base de datos está bloqueada por caché, esto rompe el muro.
+            # BYPASS DE CONTROL INMUTABLE: Rompe el bloqueo de caché de la base de datos si ocurre en Streamlit Cloud
             if usuario_input == "admin" and clave_input == "admin123":
                 st.session_state["autenticado"] = True
                 st.session_state["usuario"] = "admin"
@@ -371,7 +375,7 @@ else:
                 with engine.begin() as conn:
                     usuario_db = conn.execute(text("SELECT nombre FROM usuarios WHERE id = :id;"), {"id": id_baja}).fetchone()
                     if not usuario_db:
-                        st.warning("El ID especificado no pertenece a ningún operador.")
+                        st.warning("El ID Fleet especificado no pertenece a ningún operador.")
                     elif usuario_db[0] == st.session_state["usuario"]:
                         st.error("Un administrador no puede purgar su propio perfil en uso.")
                     elif usuario_db[0] == "admin":
