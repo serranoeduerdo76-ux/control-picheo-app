@@ -23,8 +23,8 @@ def inicializar_motor_seguro():
     elif "db_url" in st.secrets:
         return create_engine(st.secrets["db_url"])
     else:
-        # Nueva base de datos garantizada sin residuos de estructuras corruptas previas
-        return create_engine("sqlite:///beisseven_clean.db", connect_args={"timeout": 45})
+        # Forzamos un archivo totalmente nuevo para destruir cualquier residuo previo
+        return create_engine("sqlite:///beisseven_final.db", connect_args={"timeout": 45})
 
 # Inicializamos el motor físico de la base de datos
 engine = inicializar_motor_seguro()
@@ -76,11 +76,12 @@ def preparar_datos_defecto():
         else:
             conn.execute(text("INSERT OR IGNORE INTO config (clave, valor) VALUES ('precio', '0.024');"))
 
-    # 2. Verificación e inyección segura del Administrador (Evita reescritura destructiva en bucle)
+    # 2. Verificación e inyección segura del Administrador
     with engine.connect() as conn:
         existe_admin = conn.execute(text("SELECT COUNT(*) FROM usuarios WHERE nombre = 'admin';")).scalar()
     
     if existe_admin == 0:
+        # Generación e inyección del hash limpio asegurando compatibilidad de texto plano
         salt = bcrypt.gensalt()
         hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
         with engine.begin() as conn:
@@ -119,9 +120,11 @@ if not st.session_state["autenticado"]:
                         usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
                     
                     if usuario_db:
-                        # Validación por comparación de hash seguro
-                        db_hash = usuario_db[1]
-                        if bcrypt.checkpw(clave_input.encode('utf-8'), db_hash.encode('utf-8')):
+                        # Aseguramos la codificación correcta de ambos strings a bytes para Bcrypt
+                        db_hash = usuario_db[1].encode('utf-8')
+                        user_pass = clave_input.encode('utf-8')
+                        
+                        if bcrypt.checkpw(user_pass, db_hash):
                             st.session_state["autenticado"] = True
                             st.session_state["usuario"] = usuario_db[0]
                             st.session_state["rol"] = usuario_db[2]
