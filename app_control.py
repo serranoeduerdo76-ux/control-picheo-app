@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import bcrypt
+import hashlib
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 import io
@@ -23,8 +23,8 @@ def inicializar_motor_seguro():
     elif "db_url" in st.secrets:
         return create_engine(st.secrets["db_url"])
     else:
-        # Forzamos un archivo totalmente nuevo para destruir cualquier residuo previo
-        return create_engine("sqlite:///beisseven_final.db", connect_args={"timeout": 45})
+        # Base de datos limpia con motor SHA-256
+        return create_engine("sqlite:///beisseven_final_sha.db", connect_args={"timeout": 45})
 
 # Inicializamos el motor físico de la base de datos
 engine = inicializar_motor_seguro()
@@ -76,14 +76,13 @@ def preparar_datos_defecto():
         else:
             conn.execute(text("INSERT OR IGNORE INTO config (clave, valor) VALUES ('precio', '0.024');"))
 
-    # 2. Verificación e inyección segura del Administrador
+    # 2. Verificación e inyección segura del Administrador con SHA-256
     with engine.connect() as conn:
         existe_admin = conn.execute(text("SELECT COUNT(*) FROM usuarios WHERE nombre = 'admin';")).scalar()
     
     if existe_admin == 0:
-        # Generación e inyección del hash limpio asegurando compatibilidad de texto plano
-        salt = bcrypt.gensalt()
-        hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
+        # Generamos el hash inmutable SHA-256 para 'admin123'
+        hash_admin = hashlib.sha256("admin123".encode('utf-8')).hexdigest()
         with engine.begin() as conn:
             conn.execute(text("INSERT INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
 
@@ -101,11 +100,11 @@ if "autenticado" not in st.session_state:
     st.session_state["rol"] = None
 
 # ==========================================
-# 2. SISTEMA DE AUTENTICACIÓN (BCRYPT SECURE)
+# 2. SISTEMA DE AUTENTICACIÓN (SHA-256 SECURE)
 # ==========================================
 if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
-    st.subheader("Acceso Protegido por Bcrypt")
+    st.subheader("Acceso Protegido por SHA-256")
     
     with st.form("login_form", clear_on_submit=False):
         usuario_input = st.text_input("Nombre de Usuario").strip().lower()
@@ -120,11 +119,12 @@ if not st.session_state["autenticado"]:
                         usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
                     
                     if usuario_db:
-                        # Aseguramos la codificación correcta de ambos strings a bytes para Bcrypt
-                        db_hash = usuario_db[1].encode('utf-8')
-                        user_pass = clave_input.encode('utf-8')
+                        # Convertimos el intento de contraseña a SHA-256 string
+                        input_hash = hashlib.sha256(clave_input.encode('utf-8')).hexdigest()
+                        db_hash = usuario_db[1]
                         
-                        if bcrypt.checkpw(user_pass, db_hash):
+                        # Comparación directa de strings (Infalible)
+                        if input_hash == db_hash:
                             st.session_state["autenticado"] = True
                             st.session_state["usuario"] = usuario_db[0]
                             st.session_state["rol"] = usuario_db[2]
@@ -316,7 +316,7 @@ else:
             st.error(f"Fallo en la visualización de datos: {e}")
 
     # ------------------------------------------
-    # MÓDULO 3: PANEL DE PERSONAL (BCRYPT EN ALTA)
+    # MÓDULO 3: PANEL DE PERSONAL (SHA-256 EN ALTA)
     # ------------------------------------------
     elif opcion == "👥 PANEL DE PERSONAL" and st.session_state["rol"] == "admin":
         st.title("Gestión de Personal Autorizado")
@@ -340,8 +340,8 @@ else:
                     st.warning("La contraseña debe tener mínimo 6 caracteres por seguridad.")
                 else:
                     try:
-                        salt = bcrypt.gensalt()
-                        hash_nueva_clave = bcrypt.hashpw(n_clave.encode('utf-8'), salt).decode('utf-8')
+                        # Registro usando el hash SHA-256 limpio
+                        hash_nueva_clave = hashlib.sha256(n_clave.encode('utf-8')).hexdigest()
                         
                         with engine.begin() as conn:
                             conn.execute(text("""
