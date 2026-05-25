@@ -15,7 +15,7 @@ st.set_page_config(page_title="Apex Pitch - Control", layout="wide", initial_sid
 def inicializar_motor_seguro():
     """
     Detecta automáticamente si existe una conexión PostgreSQL en Secrets.
-    Si no existe, cae de forma segura a SQLite local con un archivo limpio.
+    Si no existe, cae de forma segura a SQLite local con un entorno aislado.
     """
     if "connections" in st.secrets and "postgres" in st.secrets["connections"]:
         db_url = st.secrets["connections"]["postgres"]["url"]
@@ -23,8 +23,8 @@ def inicializar_motor_seguro():
     elif "db_url" in st.secrets:
         return create_engine(st.secrets["db_url"])
     else:
-        # Usamos un nombre nuevo para garantizar que la base de datos se cree desde cero sin conflictos previos
-        return create_engine("sqlite:///beisseven_prod.db", connect_args={"timeout": 30})
+        # Nueva base de datos garantizada sin residuos de estructuras corruptas previas
+        return create_engine("sqlite:///beisseven_clean.db", connect_args={"timeout": 45})
 
 # Inicializamos el motor físico de la base de datos
 engine = inicializar_motor_seguro()
@@ -68,24 +68,25 @@ def inicializar_base_de_datos():
         """))
 
 def preparar_datos_defecto():
-    """Garantiza los parámetros de arranque financiero y usuario maestro."""
+    """Garantiza la persistencia inmutable del admin inicial y parámetros financieros."""
+    # 1. Configuración del precio base
     with engine.begin() as conn:
         if IS_POSTGRES:
             conn.execute(text("INSERT INTO config (clave, valor) VALUES ('precio', '0.024') ON CONFLICT (clave) DO NOTHING;"))
-            
-            existe_user = conn.execute(text("SELECT COUNT(*) FROM usuarios;")).scalar()
-            if existe_user == 0:
-                salt = bcrypt.gensalt()
-                hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
-                conn.execute(text("INSERT INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
         else:
             conn.execute(text("INSERT OR IGNORE INTO config (clave, valor) VALUES ('precio', '0.024');"))
-            if conn.execute(text("SELECT COUNT(*) FROM usuarios;")).scalar() == 0:
-                salt = bcrypt.gensalt()
-                hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
-                conn.execute(text("INSERT OR IGNORE INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
 
-# Forzar la creación estructural y carga inicial antes de renderizar la interfaz
+    # 2. Verificación e inyección segura del Administrador (Evita reescritura destructiva en bucle)
+    with engine.connect() as conn:
+        existe_admin = conn.execute(text("SELECT COUNT(*) FROM usuarios WHERE nombre = 'admin';")).scalar()
+    
+    if existe_admin == 0:
+        salt = bcrypt.gensalt()
+        hash_admin = bcrypt.hashpw("admin123".encode('utf-8'), salt).decode('utf-8')
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
+
+# Ejecución forzada del bloque de inicialización analítica
 try:
     inicializar_base_de_datos()
     preparar_datos_defecto()
@@ -105,7 +106,7 @@ if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
     st.subheader("Acceso Protegido por Bcrypt")
     
-    with st.form("login_form"):
+    with st.form("login_form", clear_on_submit=False):
         usuario_input = st.text_input("Nombre de Usuario").strip().lower()
         clave_input = st.text_input("Contraseña", type="password").strip()
         boton_login = st.form_submit_button("INGRESAR")
@@ -116,15 +117,20 @@ if not st.session_state["autenticado"]:
                     with engine.connect() as conn:
                         query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
                         usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
-                        
-                        # Verificación utilizando hashes de bcrypt
-                        if usuario_db and bcrypt.checkpw(clave_input.encode('utf-8'), usuario_db[1].encode('utf-8')):
+                    
+                    if usuario_db:
+                        # Validación por comparación de hash seguro
+                        db_hash = usuario_db[1]
+                        if bcrypt.checkpw(clave_input.encode('utf-8'), db_hash.encode('utf-8')):
                             st.session_state["autenticado"] = True
                             st.session_state["usuario"] = usuario_db[0]
                             st.session_state["rol"] = usuario_db[2]
+                            st.success("🔑 Conexión exitosa. Redirigiendo...")
                             st.rerun()
                         else:
-                            st.error("❌ Credenciales inválidas o acceso denegado.")
+                            st.error("❌ Contraseña incorrecta.")
+                    else:
+                        st.error("❌ El nombre de usuario no existe.")
                 except Exception as e:
                     st.error(f"Error de comunicación con el almacén de datos: {e}")
             else:
@@ -223,10 +229,11 @@ else:
                                     "f": reg_fecha.strftime('%Y-%m-%d'), "id": reg_id, "c": reg_cant, "o": st.session_state["usuario"]
                                 })
                             st.success(f"💾 Registro guardado: ID [{reg_id}] — ({reg_cant}) picheos.")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Fallo de persistencia en almacenamiento: {e}")
                             
-        # Entrada Automatizada (Sanitizada con pandas y openpyxl)
+        # Entrada Automatizada (Pandas y Openpyxl)
         with tab_bulk:
             st.write("##### Subida de Lotes de Datos Externos")
             archivo_externo = st.file_uploader("Cargar hoja de cálculo (*.csv, *.xlsx)", type=["csv", "xlsx"])
@@ -249,6 +256,7 @@ else:
                             with engine.begin() as conexion:
                                 df_cargado[columnas_esperadas].to_sql('picheos', con=conexion, if_exists='append', index=False)
                             st.success(f"🔥 Sincronización masiva completa: {len(df_cargado)} registros indexados.")
+                            st.rerun()
                     else:
                         st.error("Columnas requeridas estrictas: [fecha, id_control, cantidad, operador]")
                 except Exception as e:
@@ -297,7 +305,7 @@ else:
                                     st.warning(f"ID [{id_eliminar}] no localizado.")
                                 else:
                                     conn.execute(text("DELETE FROM picheos WHERE id = :id;"), {"id": id_eliminar})
-                                    st.success(f"Registro [{id_eliminar}] eliminado.")
+                                    st.success(f"Registro [{id_eliminar}] eliminado de forma permanente.")
                                     st.rerun()
             else:
                 st.info("No se encuentran registros históricos indexados.")
@@ -336,9 +344,10 @@ else:
                             conn.execute(text("""
                                 INSERT INTO usuarios (nombre, pass, rol) VALUES (:n, :p, :r);
                             """), {"n": n_usuario, "p": hash_nueva_clave, "r": n_rol})
-                        st.success(f"Usuario registrado: `{n_usuario}`.")
+                        st.success(f"Usuario registrado exitosamente: `{n_usuario}`.")
+                        st.rerun()
                     except Exception as e:
-                        st.error(f"El identificador ya se encuentra registrado. ({e})")
+                        st.error(f"El identificador ya se encuentra registrado o el sistema está ocupado.")
                         
         st.write("---")
         st.subheader("Cuentas Registradas")
