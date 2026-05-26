@@ -12,47 +12,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS personalizados para inyectar diseño avanzado (Tarjetas, Marcadores y Botones)
-st.markdown("""
-    <style>
-        /* Estilo para las tarjetas de métricas tipo Dashboard Deportivo */
-        .metric-card {
-            background-color: #161B26;
-            border-left: 5px solid #00E676;
-            padding: 24px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-            margin-bottom: 15px;
-        }
-        .metric-label {
-            color: #8B949E;
-            font-size: 14px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .metric-value {
-            color: #FFFFFF;
-            font-size: 38px;
-            font-weight: 700;
-            font-family: 'Courier New', monospace;
-            margin-top: 5px;
-        }
-        /* Estilizar pestañas (Tabs) */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
-        }
-        .stTabs [data-baseweb="tab"] {
-            background-color: #161B26;
-            border-radius: 4px 4px 0px 0px;
-            padding: 10px 20px;
-            color: #FFFFFF;
-        }
-        .stTabs [data-baseweb="tab"]:hover {
-            color: #00E676;
-        }
-    </style>
-""", unsafe_with_html=True)
+# Estilos CSS unificados en una sola línea para evitar fallos de parseo en Python 3.14+
+CSS_PRODUCCION = "<style>.metric-card {background-color: #161B26; border-left: 5px solid #00E676; padding: 24px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 15px;} .metric-label {color: #8B949E; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;} .metric-value {color: #FFFFFF; font-size: 38px; font-weight: 700; font-family: 'Courier New', monospace; margin-top: 5px;} .stTabs [data-baseweb='tab-list'] {gap: 8px;} .stTabs [data-baseweb='tab'] {background-color: #161B26; border-radius: 4px 4px 0px 0px; padding: 10px 20px; color: #FFFFFF;} .stTabs [data-baseweb='tab']:hover {color: #00E676;}</style>"
+st.markdown(CSS_PRODUCCION, unsafe_with_html=True)
 
 # ==========================================
 # 1. CONEXIÓN Y VERIFICACIÓN DE NEON (POSTGRESQL)
@@ -350,11 +312,11 @@ else:
                             st.success("Base de datos limpia.")
                             st.rerun()
 
-        # Tabla general en tiempo real (Rendimiento optimizado con exportación total)
+        # Tabla general en tiempo real
         st.write("---")
         try:
             with engine.connect() as conexion:
-                todos_los_datos = conexion.execute(text("SELECT id, fecha_registro, id_control, quantity_picheos, operador_responsable FROM registros_picheo ORDER BY id DESC;")).fetchall() if 'quantity_picheos' in locals() else conexion.execute(text("SELECT id, fecha_registro, id_control, cantidad_picheos, operador_responsable FROM registros_picheo ORDER BY id DESC;")).fetchall()
+                todos_los_datos = conexion.execute(text("SELECT id, fecha_registro, id_control, cantidad_picheos, operador_responsable FROM registros_picheo ORDER BY id DESC;")).fetchall()
             if todos_los_datos:
                 df_total = pd.DataFrame(todos_los_datos, columns=["ID FILA", "FECHA", "CÓDIGO CONTROL", "CANTIDAD PICHEOS", "OPERADOR ENCARGADO"])
                 
