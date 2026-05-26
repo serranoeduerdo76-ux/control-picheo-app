@@ -105,7 +105,6 @@ if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
     st.subheader("Acceso Protegido por Infraestructura Securizada")
     
-    # Al usar st.session_state de forma explícita en las claves, el texto introducido sobrevive a los reruns involuntarios
     st.text_input("Nombre de Usuario", key="usuario_memoria")
     st.text_input("Contraseña", type="password", key="clave_memoria")
     
@@ -116,7 +115,6 @@ if not st.session_state["autenticado"]:
         clave_input = st.session_state["clave_memoria"].strip()
         
         if usuario_input and clave_input:
-            # BYPASS DE CONTROL INMUTABLE: Rompe el bloqueo de caché de la base de datos si ocurre en Streamlit Cloud
             if usuario_input == "admin" and clave_input == "admin123":
                 st.session_state["autenticado"] = True
                 st.session_state["usuario"] = "admin"
@@ -124,7 +122,6 @@ if not st.session_state["autenticado"]:
                 st.success("🔑 Acceso Maestro Concedido. Redirigiendo...")
                 st.rerun()
             else:
-                # Validación estándar para otros usuarios agregados a la base de datos
                 try:
                     with engine.connect() as conn:
                         query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
@@ -209,14 +206,20 @@ else:
                 st.error(f"Fallo en la extracción de analíticas de red: {e}")
 
     # ------------------------------------------
-    # MÓDULO 2: GESTIÓN DE REGISTROS (INDIVIDUAL Y MASIVO)
+    # MÓDULO 2: GESTIÓN DE REGISTROS (CRUD COMPLETO)
     # ------------------------------------------
     elif opcion == "📝 GESTIÓN DE REGISTROS":
-        st.title("Módulo de Ingesta de Datos")
+        st.title("Módulo de Ingesta y Administración de Datos")
         
-        tab_form, tab_bulk = st.tabs(["📝 Formulario Manual", "📂 Carga Masiva Automatizada"])
+        # Estructura avanzada de 4 pestañas para encapsular el ciclo CRUD de control
+        tab_form, tab_bulk, tab_edit, tab_delete = st.tabs([
+            "📝 Formulario Manual", 
+            "📂 Carga Masiva Automatizada",
+            "✏️ Modificar Registro",
+            "🗑️ Gestión y Purgado (Borrar)"
+        ])
         
-        # Entrada Individual
+        # PESTAÑA A: Entrada Individual
         with tab_form:
             with st.form("registro_picheo_individual", clear_on_submit=True):
                 col_r1, col_r2, col_r3 = st.columns(3)
@@ -246,7 +249,7 @@ else:
                         except Exception as e:
                             st.error(f"Fallo de persistencia en almacenamiento: {e}")
                             
-        # Entrada Automatizada (Pandas y Openpyxl)
+        # PESTAÑA B: Entrada Automatizada (CSV/Excel)
         with tab_bulk:
             st.write("##### Subida de Lotes de Datos Externos")
             archivo_externo = st.file_uploader("Cargar hoja de cálculo (*.csv, *.xlsx)", type=["csv", "xlsx"])
@@ -275,10 +278,103 @@ else:
                 except Exception as e:
                     st.error(f"Error crítico en procesamiento: {e}")
 
-        # Visualización de Base de Datos Interactiva
+        # PESTAÑA C: Modificar Registro Existente
+        with tab_edit:
+            st.write("##### Panel de Modificación de Logs")
+            busqueda_id = st.text_input("Buscar por ID Control o Identificador para editar:", "").strip()
+            
+            if busqueda_id:
+                with engine.connect() as conn:
+                    query_busca = text("SELECT id, fecha, id_control, cantidad, operador FROM picheos WHERE id_control LIKE :b LIMIT 10;")
+                    resultados_busca = conn.execute(query_busca, {"b": f"%{busqueda_id}%"}).fetchall()
+                
+                if resultados_busca:
+                    opciones_edicion = {r[0]: f"ID: {r[0]} | Control: {r[2]} | Cantidad: {r[3]} | Fecha: {r[1]}" for r in resultados_busca}
+                    id_seleccionar = st.selectbox("Selecciona el registro exacto a actualizar:", opciones_edicion.keys(), format_func=lambda x: opciones_edicion[x])
+                    
+                    with engine.connect() as conn:
+                        reg_actual = conn.execute(text("SELECT * FROM picheos WHERE id = :id;"), {"id": id_seleccionar}).fetchone()
+                    
+                    if reg_actual:
+                        st.markdown("---")
+                        st.write(f"Modificando Registro Interno ID: `{id_seleccionar}`")
+                        with st.form("form_edicion_registro"):
+                            col_e1, col_e2, col_e3 = st.columns(3)
+                            with col_e1:
+                                nuevo_id_control = st.text_input("ID Control", value=reg_actual[2])
+                            with col_e2:
+                                nueva_cantidad = st.number_input("Cantidad Picheos", min_value=1, step=1, value=int(reg_actual[3]))
+                            with col_e3:
+                                nueva_fecha_str = st.text_input("Fecha (YYYY-MM-DD)", value=reg_actual[1])
+                            
+                            btn_actualizar = st.form_submit_button("APLICAR CAMBIOS EN FILA", use_container_width=True)
+                            if btn_actualizar:
+                                try:
+                                    with engine.begin() as conn:
+                                        conn.execute(text("""
+                                            UPDATE picheos 
+                                            SET fecha = :f, id_control = :id_c, cantidad = :c
+                                            WHERE id = :id;
+                                        """), {
+                                            "f": nueva_fecha_str.strip(), "id_c": nuevo_id_control.strip(), 
+                                            "c": nueva_cantidad, "id": id_seleccionar
+                                        })
+                                    st.success(f"✨ Registro ID {id_seleccionar} actualizado correctamente.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Fallo al actualizar registro: {e}")
+                else:
+                    st.warning("No se encontraron registros coincidentes.")
+
+        # PESTAÑA D: Gestión y Purgado de Datos (Borrado Seguro)
+        with tab_delete:
+            st.write("##### 🚨 Zona de Purgado de Datos")
+            col_del1, col_del2 = st.columns(2)
+            
+            with col_del1:
+                st.markdown("#### Eliminación Unitaria por ID")
+                id_eliminar = st.number_input("ID de Registro Interno:", min_value=1, step=1, key="id_del_manual")
+                confirmar_unid = st.checkbox(f"Confirmo la remoción permanente del registro ID {id_eliminar}", key="chk_unid")
+                
+                if st.button("BORRAR REGISTRO SELECCIONADO", use_container_width=True, type="primary"):
+                    if st.session_state["rol"] != 'admin':
+                        st.error("Acceso Restringido: Operadores no poseen permisos de destrucción de logs.")
+                    elif not confirmar_unid:
+                        st.warning("Debe marcar la casilla de verificación para validar el borrado.")
+                    else:
+                        with engine.begin() as conn:
+                            existe = conn.execute(text("SELECT COUNT(*) FROM picheos WHERE id = :id;"), {"id": id_eliminar}).scalar()
+                            if existe == 0:
+                                st.warning(f"ID [{id_eliminar}] no localizado.")
+                            else:
+                                conn.execute(text("DELETE FROM picheos WHERE id = :id;"), {"id": id_eliminar})
+                                st.success(f"Registro [{id_eliminar}] eliminado de forma permanente.")
+                                st.rerun()
+            
+            with col_del2:
+                st.markdown("#### Purgado Masivo Estructural")
+                st.error("⚠️ ATENCIÓN CRÍTICA: Esta acción vaciará por completo la base de datos histórica. Es irreversible.")
+                confirmar_tabla = st.checkbox("SÍ, deseo purgar TODOS los registros históricos de picheos de la base de datos.", key="chk_masivo")
+                
+                if st.button("💥 PURGAR BASE DE DATOS COMPLETA", use_container_width=True, type="primary"):
+                    if st.session_state["rol"] != 'admin':
+                        st.error("Acceso Restringido: Se requieren privilegios de Administrador Maestro.")
+                    elif not confirmar_tabla:
+                        st.warning("Debe validar el checkbox de confirmación absoluta antes de ejecutar el comando.")
+                    else:
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(text("DELETE FROM picheos;"))
+                                if not IS_POSTGRES:
+                                    conn.execute(text("DELETE FROM sqlite_sequence WHERE name='picheos';"))
+                            st.success("💥 Estructura purgada. Todos los logs históricos han sido eliminados.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Fallo en la ejecución del purgado masivo: {e}")
+
+        # Visualización Histórica y Botones de Exportación Comunes
         st.write("---")
-        st.subheader("Registros en la Base de Datos")
-        
+        st.subheader("Visor en Tiempo Real de Registros Indexados")
         try:
             with engine.connect() as conn:
                 query_picheos = conn.execute(text("SELECT id, fecha, id_control, cantidad, operador FROM picheos ORDER BY id DESC LIMIT 1000;")).fetchall()
@@ -286,7 +382,6 @@ else:
             if query_picheos:
                 df_picheos = pd.DataFrame(query_picheos, columns=["ID", "FECHA", "CONTROL", "CANTIDAD", "OPERADOR"])
                 
-                # Reporte en memoria usando Pandas y Openpyxl
                 buffer_excel = io.BytesIO()
                 with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
                     df_picheos.to_excel(writer, index=False, sheet_name='Logs_Picheo')
@@ -298,28 +393,7 @@ else:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-                
                 st.dataframe(df_picheos, use_container_width=True, height=400)
-                
-                # Eliminación Controlada por Roles
-                st.markdown("##### 🗑️ Zona de Purgado de Datos")
-                col_del1, col_del2 = st.columns([1, 3])
-                with col_del1:
-                    id_eliminar = st.number_input("ID de Registro:", min_value=1, step=1)
-                with col_del2:
-                    st.write("<br/>", unsafe_allow_html=True)
-                    if st.button("BORRAR REGISTRO SELECCIONADO", use_container_width=True):
-                        if st.session_state["rol"] != 'admin':
-                            st.error("Acceso Restringido: Operadores no poseen permisos de destrucción de logs.")
-                        else:
-                            with engine.begin() as conn:
-                                existe = conn.execute(text("SELECT COUNT(*) FROM picheos WHERE id = :id;"), {"id": id_eliminar}).scalar()
-                                if existe == 0:
-                                    st.warning(f"ID [{id_eliminar}] no localizado.")
-                                else:
-                                    conn.execute(text("DELETE FROM picheos WHERE id = :id;"), {"id": id_eliminar})
-                                    st.success(f"Registro [{id_eliminar}] eliminado de forma permanente.")
-                                    st.rerun()
             else:
                 st.info("No se encuentran registros históricos indexados.")
         except Exception as e:
