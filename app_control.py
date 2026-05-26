@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 import hashlib
 from datetime import datetime
 from sqlalchemy import create_engine, text
@@ -7,54 +6,31 @@ from sqlalchemy import create_engine, text
 # Configuración de página
 st.set_page_config(page_title="Apex Pitch", layout="wide")
 
-# Función de conexión simplificada al máximo
+# Conexión maestra: Lee ÚNICAMENTE del Secret
 @st.cache_resource
 def get_engine():
-    try:
-        url = st.secrets["db_url"]
-        # Creamos el motor sin parámetros extraños que causan conflictos
-        return create_engine(url, pool_pre_ping=True)
-    except Exception as e:
-        st.error(f"Error en configuración de conexión: {e}")
-        st.stop()
+    # Si esta línea falla, es que el nombre de la variable en Secrets no es 'db_url'
+    url = st.secrets["db_url"]
+    return create_engine(url, pool_pre_ping=True)
 
-# Intento de conexión con captura de error detallada
+# Inicializar motor
 try:
     engine = get_engine()
-    # Probamos la conexión inmediatamente
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
 except Exception as e:
-    st.error("--- ERROR DE CONEXIÓN A NEON ---")
-    st.error(f"El sistema no pudo conectar con la base de datos.")
-    st.error(f"Detalle técnico: {e}")
+    st.error(f"Error de configuración en Secrets: {e}")
     st.stop()
 
-# --- Lógica de Base de Datos ---
+# Lógica de Base de Datos
 def inicializar_sistema():
     with engine.begin() as conn:
         conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS usuarios (
-                id SERIAL PRIMARY KEY, 
-                nombre_usuario TEXT UNIQUE, 
-                contrasena_hash TEXT, 
-                rol_acceso TEXT
-            );
-            CREATE TABLE IF NOT EXISTS registros_picheo (
-                id SERIAL PRIMARY KEY, 
-                fecha_registro TEXT, 
-                id_control TEXT, 
-                cantidad_picheos INTEGER, 
-                operador_responsable TEXT
-            );
+            CREATE TABLE IF NOT EXISTS usuarios (id SERIAL PRIMARY KEY, nombre_usuario TEXT UNIQUE, contrasena_hash TEXT, rol_acceso TEXT);
+            CREATE TABLE IF NOT EXISTS registros_picheo (id SERIAL PRIMARY KEY, fecha_registro TEXT, id_control TEXT, cantidad_picheos INTEGER, operador_responsable TEXT);
         """))
-        if conn.execute(text("SELECT COUNT(*) FROM usuarios")).scalar() == 0:
-            h = hashlib.sha256("admin123".encode()).hexdigest()
-            conn.execute(text("INSERT INTO usuarios (nombre_usuario, contrasena_hash, rol_acceso) VALUES ('admin', :h, 'admin')"), {"h": h})
 
 inicializar_sistema()
 
-# --- Interfaz Principal ---
+# Interfaz
 if "login" not in st.session_state: st.session_state.login = False
 
 if not st.session_state.login:
@@ -73,8 +49,7 @@ else:
     if st.sidebar.button("Cerrar Sesión"):
         st.session_state.login = False
         st.rerun()
-    
     st.header("Dashboard de Picheo")
     with engine.connect() as conn:
         total = conn.execute(text("SELECT SUM(cantidad_picheos) FROM registros_picheo")).scalar() or 0
-    st.metric("Total Picheos en Servidor", f"{total:,}")
+    st.metric("Total Picheos", f"{total:,}")
