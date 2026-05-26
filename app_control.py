@@ -9,31 +9,24 @@ import io
 st.set_page_config(page_title="Apex Pitch - Control", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 1. MOTOR DE BASE DE DATOS E INFRAESTRUCTURA (POSTGRESQL / SQLITE)
+# 1. MOTOR DE BASE DE DATOS E INFRAESTRUCTURA
 # ==========================================
 @st.cache_resource
 def inicializar_motor_seguro():
-    """
-    Detecta automáticamente si existe una conexión PostgreSQL en Secrets.
-    Si no existe, cae de forma segura a SQLite local con un entorno aislado.
-    """
+    """Detecta automáticamente el motor de base de datos disponible."""
     if "connections" in st.secrets and "postgres" in st.secrets["connections"]:
         db_url = st.secrets["connections"]["postgres"]["url"]
         return create_engine(db_url, pool_size=10, max_overflow=20, pool_pre_ping=True)
     elif "db_url" in st.secrets:
         return create_engine(st.secrets["db_url"])
     else:
-        # Forzamos un prefijo de producción final absoluto para aislar el entorno
         return create_engine("sqlite:///beisseven_prod_final.db", connect_args={"timeout": 45})
 
-# Inicializamos el motor físico de la base de datos
 engine = inicializar_motor_seguro()
-
-# Acceso seguro al dialecto mediante la URL (Soporte SQLAlchemy 2.0+)
 IS_POSTGRES = "postgres" in engine.url.drivername or "postgresql" in engine.url.drivername
 
 def inicializar_base_de_datos():
-    """Crea las estructuras analíticas utilizando bloques de transacción segura (begin)."""
+    """Crea las estructuras analíticas básicas utilizando transacciones seguras."""
     serial_type = "SERIAL" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
     pk_constraint = "PRIMARY KEY" if IS_POSTGRES else ""
 
@@ -69,14 +62,12 @@ def inicializar_base_de_datos():
 
 def preparar_datos_defecto():
     """Garantiza la persistencia inmutable del admin inicial y parámetros financieros."""
-    # 1. Configuración del precio base
     with engine.begin() as conn:
         if IS_POSTGRES:
             conn.execute(text("INSERT INTO config (clave, valor) VALUES ('precio', '0.024') ON CONFLICT (clave) DO NOTHING;"))
         else:
             conn.execute(text("INSERT OR IGNORE INTO config (clave, valor) VALUES ('precio', '0.024');"))
 
-    # 2. Verificación e inyección segura del Administrador con SHA-256
     with engine.connect() as conn:
         existe_admin = conn.execute(text("SELECT COUNT(*) FROM usuarios WHERE nombre = 'admin';")).scalar()
     
@@ -85,66 +76,68 @@ def preparar_datos_defecto():
         with engine.begin() as conn:
             conn.execute(text("INSERT INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
 
-# Ejecución forzada del bloque de inicialización analítica
+# Ejecución de inicialización de tablas (Protege los datos existentes)
 try:
     inicializar_base_de_datos()
     preparar_datos_defecto()
 except Exception as e:
-    st.error(f"🚨 Error crítico de inicialización de infraestructura: {e}")
+    st.error(f"🚨 Error de infraestructura: {e}")
 
-# Gestión de hilos de sesión en Streamlit
+# Manejo de estados de sesión
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = None
     st.session_state["rol"] = None
 
 # ==========================================
-# 2. SISTEMA DE AUTENTICACIÓN CON CAPTURA DE ESTADO ESTÁTICO
+# 2. SISTEMA DE AUTENTICACIÓN CORREGIDO (ROBUSTO)
 # ==========================================
 if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
     st.subheader("Acceso Protegido por Infraestructura Securizada")
     
-    st.text_input("Nombre de Usuario", key="usuario_memoria")
-    st.text_input("Contraseña", type="password", key="clave_memoria")
-    
-    boton_login = st.button("INGRESAR", use_container_width=True)
-    
-    if boton_login:
-        usuario_input = st.session_state["usuario_memoria"].strip().lower()
-        clave_input = st.session_state["clave_memoria"].strip()
+    with st.form("formulario_autenticacion"):
+        usuario_input = st.text_input("Nombre de Usuario").strip().lower()
+        clave_input = st.text_input("Contraseña", type="password").strip()
+        boton_login = st.form_submit_button("INGRESAR", use_container_width=True)
         
-        if usuario_input and clave_input:
-            if usuario_input == "admin" and clave_input == "admin123":
-                st.session_state["autenticado"] = True
-                st.session_state["usuario"] = "admin"
-                st.session_state["rol"] = "admin"
-                st.success("🔑 Acceso Maestro Concedido. Redirigiendo...")
-                st.rerun()
-            else:
-                try:
-                    with engine.connect() as conn:
-                        query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
-                        usuario_db = conn.execute(query, {"u": usuario_input}).fetchone()
-                    
-                    if usuario_db:
-                        input_hash = hashlib.sha256(clave_input.encode('utf-8')).hexdigest()
-                        db_hash = usuario_db[1]
+        if boton_login:
+            if usuario_input and clave_input:
+                # 1. Bypass Maestro Inmediato de Emergencia
+                if usuario_input == "admin" and clave_input == "admin123":
+                    st.session_state["autenticado"] = True
+                    st.session_state["usuario"] = "admin"
+                    st.session_state["rol"] = "admin"
+                    st.success("🔑 Acceso Maestro Concedido. Redirigiendo...")
+                    st.rerun()
+                else:
+                    # 2. Verificación robusta por mapeo de nombres de columna (Evita el bug de desfase de índices)
+                    try:
+                        with engine.connect() as conn:
+                            query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
+                            resultado = conn.execute(query, {"u": usuario_input}).mappings().fetchone()
                         
-                        if input_hash == db_hash:
-                            st.session_state["autenticado"] = True
-                            st.session_state["usuario"] = usuario_db[0]
-                            st.session_state["rol"] = usuario_db[2]
-                            st.success("🔑 Conexión exitosa. Redirigiendo...")
-                            st.rerun()
+                        if resultado:
+                            hash_almacenado = resultado["pass"]
+                            rol_usuario = resultado["rol"]
+                            nombre_usuario = resultado["nombre"]
+                            
+                            input_hash = hashlib.sha256(clave_input.encode('utf-8')).hexdigest()
+                            
+                            if input_hash == hash_almacenado:
+                                st.session_state["autenticado"] = True
+                                st.session_state["usuario"] = nombre_usuario
+                                st.session_state["rol"] = rol_usuario
+                                st.success("🔑 Conexión exitosa. Redirigiendo...")
+                                st.rerun()
+                            else:
+                                st.error("❌ Contraseña incorrecta.")
                         else:
-                            st.error("❌ Contraseña incorrecta.")
-                    else:
-                        st.error("❌ El nombre de usuario no existe.")
-                except Exception as e:
-                    st.error(f"Error de comunicación con el almacén de datos: {e}")
-        else:
-            st.warning("Por favor, rellene todos los campos de autenticación.")
+                            st.error("❌ El nombre de usuario no existe en los registros actuales.")
+                    except Exception as e:
+                        st.error(f"Error de comunicación con el almacén de datos: {e}")
+            else:
+                st.warning("Por favor, rellene todos los campos de autenticación.")
     st.caption("Aviso del Sistema: Credenciales maestras iniciales: 'admin' / 'admin123'.")
 
 # ==========================================
@@ -206,12 +199,11 @@ else:
                 st.error(f"Fallo en la extracción de analíticas de red: {e}")
 
     # ------------------------------------------
-    # MÓDULO 2: GESTIÓN DE REGISTROS (CRUD COMPLETO)
+    # MÓDULO 2: GESTIÓN DE REGISTROS (CRUD COMPLETO CON TABS)
     # ------------------------------------------
     elif opcion == "📝 GESTIÓN DE REGISTROS":
         st.title("Módulo de Ingesta y Administración de Datos")
         
-        # Estructura avanzada de 4 pestañas para encapsular el ciclo CRUD de control
         tab_form, tab_bulk, tab_edit, tab_delete = st.tabs([
             "📝 Formulario Manual", 
             "📂 Carga Masiva Automatizada",
@@ -372,7 +364,7 @@ else:
                         except Exception as e:
                             st.error(f"Fallo en la ejecución del purgado masivo: {e}")
 
-        # Visualización Histórica y Botones de Exportación Comunes
+        # Visor Histórico Común
         st.write("---")
         st.subheader("Visor en Tiempo Real de Registros Indexados")
         try:
@@ -449,7 +441,7 @@ else:
                 with engine.begin() as conn:
                     usuario_db = conn.execute(text("SELECT nombre FROM usuarios WHERE id = :id;"), {"id": id_baja}).fetchone()
                     if not usuario_db:
-                        st.warning("El ID Fleet especificado no pertenece a ningún operador.")
+                        st.warning("El ID especificado no pertenece a ningún operador.")
                     elif usuario_db[0] == st.session_state["usuario"]:
                         st.error("Un administrador no puede purgar su propio perfil en uso.")
                     elif usuario_db[0] == "admin":
