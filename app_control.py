@@ -1,91 +1,906 @@
-import customtkinter as ctk
-import tkinter as tk
-from tkinter import messagebox, ttk, filedialog
-import sqlite3, hashlib, os, pandas as pd, logging
+"""
+╔══════════════════════════════════════════════════╗
+║         BeisSeven — Sistema de Gestión           ║
+║         Versión Streamlit  •  2025               ║
+╚══════════════════════════════════════════════════╝
+Dependencias:
+    pip install streamlit pandas openpyxl reportlab
+Ejecutar:
+    streamlit run beisseven_app.py
+"""
+
+import streamlit as st
+import sqlite3
+import hashlib
+import os
+import pandas as pd
 from datetime import datetime, timedelta
-import calendar
-from typing import Any
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
+from io import BytesIO
+import logging
 
-# --- CONFIGURACIÓN DE LOGS ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.FileHandler("beisseven.log"), logging.StreamHandler()])
+# ─────────────────────────────────────────────
+# REPORTLAB (PDF) — importación segura
+# ─────────────────────────────────────────────
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    PDF_OK = True
+except ImportError:
+    PDF_OK = False
 
-# --- DISEÑO PROFESIONAL (Paleta Elegante) ---
-ctk.set_appearance_mode("light") # Look moderno tipo SaaS
-THEME = {
-    "BG": "#F1F5F9", "SIDEBAR": "#1E293B", "CARD": "#FFFFFF", 
-    "PRIMARY": "#2563EB", "PRIMARY_H": "#1D4ED8", "TEXT": "#1E293B",
-    "DANGER": "#E11D48", "DANGER_H": "#BE123C", "SUCCESS": "#16A34A"
+# ─────────────────────────────────────────────
+# CONFIGURACIÓN GLOBAL
+# ─────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("beisseven.log"), logging.StreamHandler()],
+)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_NAME  = os.path.join(BASE_DIR, "beisseven.db")
+
+# Paleta de colores
+C_ACCENT  = "#00AAFF"
+C_SUCCESS = "#00FF77"
+C_DANGER  = "#FF2244"
+C_WARN    = "#FFB800"
+
+st.set_page_config(
+    page_title="BeisSeven",
+    page_icon="⚾",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ─────────────────────────────────────────────
+# CSS GLOBAL — tema oscuro BeisSeven
+# ─────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Barlow:wght@300;400;500;600&display=swap');
+
+/* ── Reset & base ── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, [data-testid="stAppViewContainer"] {
+    background: #030810 !important;
+    color: #E8EFF8 !important;
+    font-family: 'Barlow', sans-serif !important;
 }
-DB_NAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'beisseven.db')
 
-# --- CLASE DATABASE MANAGER (MANTENIDA) ---
-class DatabaseManager:
-    @staticmethod
-    def conectar():
-        conn = sqlite3.connect(DB_NAME, timeout=20)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background: #030810 !important;
+    border-right: 1px solid #0D2040 !important;
+}
+[data-testid="stSidebar"] * { color: #CBD5E0 !important; }
 
-    @staticmethod
-    def ejecutar(query: str, params: tuple = (), fetch: str = "none") -> Any:
-        conn = DatabaseManager.conectar()
+/* Botones Streamlit nativos */
+.stButton > button {
+    background: linear-gradient(135deg, #00AAFF, #0077CC) !important;
+    color: white !important;
+    font-family: 'Rajdhani', sans-serif !important;
+    font-weight: 700 !important;
+    font-size: 0.9rem !important;
+    letter-spacing: 0.08em !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 0.5rem 1.2rem !important;
+    transition: all 0.2s ease !important;
+}
+.stButton > button:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 20px rgba(0,170,255,0.4) !important;
+}
+
+/* Inputs */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stDateInput > div > div > input,
+.stSelectbox > div > div,
+.stTextArea textarea {
+    background: #0A1628 !important;
+    border: 1px solid #0D2040 !important;
+    border-radius: 8px !important;
+    color: #E8EFF8 !important;
+    font-family: 'Barlow', sans-serif !important;
+}
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus {
+    border-color: #00AAFF !important;
+    box-shadow: 0 0 0 2px rgba(0,170,255,0.2) !important;
+}
+
+/* Dataframe / tabla */
+.dataframe-container { border-radius: 12px; overflow: hidden; }
+[data-testid="stDataFrame"] {
+    background: #0A1628 !important;
+    border-radius: 12px !important;
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    background: #0A1628 !important;
+    border-radius: 10px !important;
+    padding: 4px !important;
+    gap: 4px !important;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent !important;
+    color: #7A90A8 !important;
+    font-family: 'Rajdhani', sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.06em !important;
+    border-radius: 7px !important;
+    border: none !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #00AAFF !important;
+    color: white !important;
+}
+
+/* Métricas nativas */
+[data-testid="stMetric"] {
+    background: #0A1628 !important;
+    border: 1px solid #0D2040 !important;
+    border-radius: 14px !important;
+    padding: 1.2rem 1.5rem !important;
+}
+[data-testid="stMetricLabel"] {
+    font-family: 'Rajdhani', sans-serif !important;
+    font-size: 0.78rem !important;
+    letter-spacing: 0.12em !important;
+    color: #7A90A8 !important;
+    font-weight: 600 !important;
+}
+[data-testid="stMetricValue"] {
+    font-family: 'Rajdhani', sans-serif !important;
+    font-size: 2.4rem !important;
+    font-weight: 700 !important;
+    color: #00AAFF !important;
+}
+
+/* Expander */
+.streamlit-expanderHeader {
+    background: #0A1628 !important;
+    border-radius: 10px !important;
+    font-family: 'Rajdhani', sans-serif !important;
+    font-weight: 600 !important;
+    color: #CBD5E0 !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #030810; }
+::-webkit-scrollbar-thumb { background: #0D2040; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #00AAFF; }
+
+/* Ocultar elementos de Streamlit que no se necesitan */
+#MainMenu, footer, [data-testid="stDecoration"] { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# COMPONENTES HTML REUTILIZABLES
+# ─────────────────────────────────────────────
+def card_metric(titulo: str, valor: str, color: str = C_ACCENT, subtitulo: str = ""):
+    sub = f"<p style='margin:0;font-size:0.78rem;color:#7A90A8;'>{subtitulo}</p>" if subtitulo else ""
+    st.markdown(f"""
+    <div style="background:#0A1628;border:1px solid #0D2040;border-radius:14px;
+                padding:1.4rem 1.6rem;text-align:center;border-top:3px solid {color};">
+        <p style="margin:0 0 6px;font-family:'Rajdhani',sans-serif;
+                  font-size:0.75rem;font-weight:600;letter-spacing:0.14em;
+                  color:#7A90A8;text-transform:uppercase;">{titulo}</p>
+        <p style="margin:0;font-family:'Rajdhani',sans-serif;
+                  font-size:2.6rem;font-weight:700;color:{color};
+                  line-height:1;">{valor}</p>
+        {sub}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def titulo_seccion(texto: str, icono: str = ""):
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1.2rem;">
+        <span style="font-size:1.5rem;">{icono}</span>
+        <h2 style="margin:0;font-family:'Rajdhani',sans-serif;
+                   font-size:1.7rem;font-weight:700;color:#E8EFF8;
+                   letter-spacing:0.04em;">{texto}</h2>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def badge(texto: str, color: str = C_ACCENT):
+    return f"""<span style="background:{color}22;color:{color};
+                border:1px solid {color}55;border-radius:5px;
+                padding:2px 10px;font-size:0.78rem;
+                font-family:'Rajdhani',sans-serif;font-weight:600;
+                letter-spacing:0.06em;">{texto}</span>"""
+
+
+def divider():
+    st.markdown("<hr style='border:none;border-top:1px solid #0D2040;margin:1.2rem 0;'>",
+                unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# BASE DE DATOS
+# ─────────────────────────────────────────────
+def db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_NAME, timeout=20)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def db_exec(query: str, params: tuple = (), fetch: str = "none"):
+    conn = None
+    try:
+        conn = db_connect()
         cursor = conn.execute(query, params)
-        res = cursor.fetchone() if fetch == "one" else (cursor.fetchall() if fetch == "all" else None)
+        if fetch == "one":
+            return cursor.fetchone()
+        if fetch == "all":
+            return cursor.fetchall()
         conn.commit()
-        conn.close()
-        return res
+        return cursor.lastrowid
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"DB error: {e} | Query: {query}")
+        raise e
+    finally:
+        if conn:
+            conn.close()
 
-# --- CLASE MAINAPP (REDISENADA VISUALMENTE) ---
-class MainApp(ctk.CTk):
-    def __init__(self, user_data: tuple):
-        super().__init__()
-        self.user = user_data
-        self.title("BeisSeven | Professional Suite")
-        self.geometry("1400x900")
-        self.configure(fg_color=THEME["BG"])
-        
-        # Sidebar con estilo moderno
-        self.sidebar = ctk.CTkFrame(self, width=280, fg_color=THEME["SIDEBAR"], corner_radius=0)
-        self.sidebar.pack(side="left", fill="y")
-        
-        ctk.CTkLabel(self.sidebar, text="BEISSEVEN", font=("Arial Black", 24), text_color="white").pack(pady=40)
-        
-        menu = [("📊 Dashboard", self.vista_dashboard), ("📝 Registros", self.vista_registros), 
-                ("👥 Usuarios", self.vista_usuarios), ("⚙️ Configuración", self.vista_config)]
-        
-        for txt, cmd in menu:
-            ctk.CTkButton(self.sidebar, text=txt, command=cmd, fg_color="transparent", 
-                          anchor="w", height=50, font=("Arial", 14, "bold")).pack(fill="x", padx=20)
-            
-        ctk.CTkButton(self.sidebar, text="Cerrar Sesión", fg_color=THEME["DANGER"], command=self.cerrar_sesion).pack(side="bottom", pady=40, padx=20)
-        
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.pack(side="right", fill="both", expand=True, padx=40, pady=40)
-        self.vista_dashboard()
 
-    def limpiar_container(self):
-        for w in self.container.winfo_children(): w.destroy()
+def inicializar_db():
+    db_exec("""CREATE TABLE IF NOT EXISTS usuarios
+               (id INTEGER PRIMARY KEY, nombre TEXT UNIQUE, pass TEXT, rol TEXT)""")
+    db_exec("""CREATE TABLE IF NOT EXISTS picheos
+               (id INTEGER PRIMARY KEY, fecha TEXT, id_control TEXT,
+                cantidad INTEGER, operador TEXT)""")
+    db_exec("CREATE TABLE IF NOT EXISTS config (clave TEXT PRIMARY KEY, valor TEXT)")
+    db_exec("INSERT OR IGNORE INTO config VALUES ('precio', '0.024')")
+    admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
+    db_exec("INSERT OR IGNORE INTO usuarios (nombre,pass,rol) VALUES ('admin',?,'admin')",
+            (admin_hash,))
 
-    # --- AQUÍ MANTIENES TODOS TUS MÉTODOS ORIGINALES (vista_dashboard, guardar_dato, etc.) ---
-    # He profesionalizado el contenedor donde se dibujan, manteniendo tu lógica 100%.
-    
-    def vista_dashboard(self):
-        self.limpiar_container()
-        # [PEGAR AQUÍ TU LÓGICA DE DASHBOARD]
-        
-    def vista_registros(self):
-        self.limpiar_container()
-        # [PEGAR AQUÍ TU LÓGICA DE REGISTROS/TREEVIEW]
-        
-    def cerrar_sesion(self):
-        self.destroy()
-        # LoginApp().mainloop()
+
+# ─────────────────────────────────────────────
+# EXPORTACIONES
+# ─────────────────────────────────────────────
+def exportar_excel() -> BytesIO:
+    with db_connect() as conn:
+        df = pd.read_sql_query(
+            "SELECT id,fecha,id_control,cantidad,operador FROM picheos ORDER BY fecha DESC", conn)
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Registros")
+    buf.seek(0)
+    return buf
+
+
+def exportar_pdf() -> BytesIO:
+    if not PDF_OK:
+        return None
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter,
+                            leftMargin=2*cm, rightMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+    estilos = getSampleStyleSheet()
+    titulo_style = ParagraphStyle("titulo", parent=estilos["Title"],
+                                  fontName="Helvetica-Bold", fontSize=18,
+                                  textColor=colors.HexColor("#00AAFF"), spaceAfter=6)
+    sub_style   = ParagraphStyle("sub", parent=estilos["Normal"],
+                                  fontName="Helvetica", fontSize=9,
+                                  textColor=colors.grey, spaceAfter=16)
+    elementos = [
+        Paragraph("REPORTE — BEISSEVEN", titulo_style),
+        Paragraph(f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", sub_style),
+        Spacer(1, 0.4*cm),
+    ]
+    datos = db_exec(
+        "SELECT fecha,id_control,cantidad,operador FROM picheos ORDER BY fecha DESC LIMIT 500",
+        fetch="all")
+    if datos:
+        tabla_data = [["FECHA", "CONTROL", "CANTIDAD", "OPERADOR"]] + [list(r) for r in datos]
+        t = Table(tabla_data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0),  colors.HexColor("#00AAFF")),
+            ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
+            ("FONTNAME",      (0, 0), (-1, 0),  "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1, 0),  9),
+            ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#F7F9FC"),
+                                                  colors.HexColor("#EDF2F7")]),
+            ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E0")),
+            ("TOPPADDING",    (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elementos.append(t)
+    doc.build(elementos)
+    buf.seek(0)
+    return buf
+
+
+# ─────────────────────────────────────────────
+# SESSION STATE
+# ─────────────────────────────────────────────
+def init_session():
+    defaults = {"logged_in": False, "user": None, "nav": "Dashboard"}
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+# ─────────────────────────────────────────────
+# PANTALLA DE LOGIN
+# ─────────────────────────────────────────────
+def pantalla_login():
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] {
+        background: radial-gradient(ellipse at 30% 20%, #051530 0%, #030810 60%) !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Logo centrado
+    col_l, col_c, col_r = st.columns([1, 1.4, 1])
+    with col_c:
+        st.markdown("""
+        <div style="text-align:center;padding:3rem 0 1.5rem;">
+            <div style="font-size:4rem;margin-bottom:0.3rem;">⚾</div>
+            <h1 style="margin:0;font-family:'Rajdhani',sans-serif;
+                       font-size:3.4rem;font-weight:700;
+                       background:linear-gradient(135deg,#00AAFF,#00FF77);
+                       -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+                BeisSeven
+            </h1>
+            <p style="margin:0.3rem 0 2.5rem;color:#7A90A8;
+                      font-size:0.95rem;letter-spacing:0.12em;
+                      text-transform:uppercase;font-family:'Barlow',sans-serif;">
+                Sistema de Gestión
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.container():
+            st.markdown("""
+            <div style="background:#0A1628;border:1px solid #0D2040;
+                        border-radius:18px;padding:2.5rem 2rem;
+                        box-shadow:0 20px 60px rgba(0,0,0,0.6);">
+            """, unsafe_allow_html=True)
+
+            usuario  = st.text_input("👤  Usuario",  placeholder="Ingrese su usuario")
+            password = st.text_input("🔒  Contraseña", placeholder="Ingrese su contraseña",
+                                     type="password")
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            if st.button("INGRESAR AL SISTEMA", use_container_width=True):
+                if not usuario or not password:
+                    st.error("Por favor ingrese usuario y contraseña.")
+                else:
+                    ph = hashlib.sha256(password.encode()).hexdigest()
+                    user = db_exec(
+                        "SELECT * FROM usuarios WHERE nombre=? AND pass=?",
+                        (usuario, ph), fetch="one")
+                    if user:
+                        st.session_state.logged_in = True
+                        st.session_state.user = user   # (id, nombre, pass, rol)
+                        logging.info(f"Login exitoso: {usuario}")
+                        st.rerun()
+                    else:
+                        logging.warning(f"Login fallido: {usuario}")
+                        st.error("Credenciales incorrectas.")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("""
+        <p style="text-align:center;margin-top:2rem;color:#3A5070;font-size:0.8rem;">
+            Usuario por defecto: <b style='color:#00AAFF'>admin</b> /
+            Contraseña: <b style='color:#00AAFF'>admin123</b>
+        </p>
+        """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# SIDEBAR DE NAVEGACIÓN
+# ─────────────────────────────────────────────
+def sidebar_nav():
+    user = st.session_state.user
+    rol  = user[3]
+
+    with st.sidebar:
+        st.markdown(f"""
+        <div style="text-align:center;padding:1.5rem 0 1rem;">
+            <div style="font-size:2.8rem;">⚾</div>
+            <h2 style="margin:0.2rem 0 0.1rem;font-family:'Rajdhani',sans-serif;
+                       font-size:2rem;font-weight:700;
+                       background:linear-gradient(135deg,#00AAFF,#00FF77);
+                       -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+                BeisSeven
+            </h2>
+            <p style="margin:0;color:#3A5070;font-size:0.72rem;
+                      letter-spacing:0.14em;text-transform:uppercase;">
+                Sistema de Gestión
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="background:#0A1628;border:1px solid #0D2040;border-radius:10px;
+                    padding:0.8rem 1rem;margin:0.5rem 0 1.5rem;text-align:center;">
+            <p style="margin:0;font-size:0.72rem;color:#7A90A8;
+                      letter-spacing:0.1em;text-transform:uppercase;">Sesión activa</p>
+            <p style="margin:2px 0 0;font-family:'Rajdhani',sans-serif;
+                      font-size:1.1rem;font-weight:700;color:#E8EFF8;">{user[1].upper()}</p>
+            <p style="margin:1px 0 0;">{badge(rol.upper(), C_ACCENT if rol=='admin' else C_SUCCESS)}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        opciones = [
+            ("📊", "Dashboard"),
+            ("📝", "Registros"),
+        ]
+        if rol == "admin":
+            opciones += [("👥", "Usuarios"), ("⚙️", "Configuración")]
+
+        for icono, nombre in opciones:
+            activo = st.session_state.nav == nombre
+            bg     = "#00AAFF22" if activo else "transparent"
+            bord   = "#00AAFF" if activo else "transparent"
+            col_t  = "#00AAFF" if activo else "#CBD5E0"
+            st.markdown(f"""
+            <div style="background:{bg};border-left:3px solid {bord};
+                        border-radius:0 8px 8px 0;padding:0.6rem 1rem;
+                        margin:2px 0;cursor:pointer;">
+                <span style="font-size:1rem;">{icono}</span>
+                <span style="font-family:'Rajdhani',sans-serif;font-weight:600;
+                             font-size:0.95rem;color:{col_t};
+                             margin-left:8px;letter-spacing:0.06em;">{nombre.upper()}</span>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button(nombre, key=f"nav_{nombre}", use_container_width=True,
+                         help=f"Ir a {nombre}"):
+                st.session_state.nav = nombre
+                st.rerun()
+
+        st.markdown("<br>" * 3, unsafe_allow_html=True)
+
+        if st.button("🚪  CERRAR SESIÓN", use_container_width=True, key="logout"):
+            logging.info(f"Sesión cerrada: {user[1]}")
+            st.session_state.logged_in = False
+            st.session_state.user      = None
+            st.session_state.nav       = "Dashboard"
+            st.rerun()
+
+        st.markdown("""
+        <p style="text-align:center;color:#1A2840;font-size:0.68rem;
+                  margin-top:1rem;letter-spacing:0.06em;">
+            BeisSeven v2.0 — 2025
+        </p>
+        """, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════
+#  VISTAS
+# ═══════════════════════════════════════════════════════
+
+# ── DASHBOARD ───────────────────────────────────────────
+def vista_dashboard():
+    titulo_seccion("Resumen de Operaciones", "📊")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        fecha_desde = st.date_input("📅 Desde",
+                                    value=datetime.now().date() - timedelta(days=30),
+                                    key="d_desde")
+    with col2:
+        fecha_hasta = st.date_input("📅 Hasta",
+                                    value=datetime.now().date(),
+                                    key="d_hasta")
+
+    divider()
+
+    if fecha_desde > fecha_hasta:
+        st.warning("⚠️ La fecha 'Desde' no puede ser mayor que 'Hasta'.")
+        return
+
+    try:
+        row = db_exec("SELECT COALESCE(SUM(cantidad),0) FROM picheos WHERE fecha BETWEEN ? AND ?",
+                      (str(fecha_desde), str(fecha_hasta)), fetch="one")
+        total = int(row[0]) if row else 0
+
+        p_row = db_exec("SELECT valor FROM config WHERE clave='precio'", fetch="one")
+        precio = float(p_row[0]) if p_row else 0.024
+
+        usd = total * precio
+
+        # Top operador
+        top_row = db_exec(
+            """SELECT operador, SUM(cantidad) AS s FROM picheos
+               WHERE fecha BETWEEN ? AND ?
+               GROUP BY operador ORDER BY s DESC LIMIT 1""",
+            (str(fecha_desde), str(fecha_hasta)), fetch="one")
+        top_op = top_row[0] if top_row else "—"
+        top_val = f"{int(top_row[1]):,}" if top_row else "0"
+
+        # Días con actividad
+        dias_row = db_exec(
+            "SELECT COUNT(DISTINCT fecha) FROM picheos WHERE fecha BETWEEN ? AND ?",
+            (str(fecha_desde), str(fecha_hasta)), fetch="one")
+        dias = int(dias_row[0]) if dias_row else 0
+
+    except Exception as e:
+        logging.error(f"Error dashboard: {e}")
+        st.error("Error al cargar métricas.")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        card_metric("TOTAL PICHEOS", f"{total:,}", C_ACCENT,
+                    f"Del {fecha_desde} al {fecha_hasta}")
+    with c2:
+        card_metric("USD ESTIMADO", f"${usd:,.2f}", C_SUCCESS,
+                    f"@ ${precio}/unidad")
+    with c3:
+        card_metric("DÍAS ACTIVOS", str(dias), C_WARN,
+                    "En el rango seleccionado")
+    with c4:
+        card_metric("TOP OPERADOR", top_op, "#BF8FFF",
+                    f"{top_val} picheos")
+
+    divider()
+
+    # Gráfica de evolución diaria
+    try:
+        with db_connect() as conn:
+            df_chart = pd.read_sql_query(
+                """SELECT fecha, SUM(cantidad) as total
+                   FROM picheos WHERE fecha BETWEEN ? AND ?
+                   GROUP BY fecha ORDER BY fecha""",
+                conn, params=(str(fecha_desde), str(fecha_hasta)))
+
+        if not df_chart.empty:
+            st.markdown(f"""
+            <p style="font-family:'Rajdhani',sans-serif;font-weight:600;
+                      color:#7A90A8;font-size:0.8rem;letter-spacing:0.1em;
+                      text-transform:uppercase;margin-bottom:0.5rem;">
+                📈  Evolución Diaria de Picheos
+            </p>""", unsafe_allow_html=True)
+
+            df_chart["fecha"] = pd.to_datetime(df_chart["fecha"])
+            st.area_chart(df_chart.set_index("fecha")["total"], color=C_ACCENT)
+        else:
+            st.info("No hay datos para mostrar en el gráfico con el rango seleccionado.")
+    except Exception as e:
+        logging.error(f"Error gráfica: {e}")
+
+    # Tabla rápida — últimos 10
+    divider()
+    st.markdown(f"""
+    <p style="font-family:'Rajdhani',sans-serif;font-weight:600;
+              color:#7A90A8;font-size:0.8rem;letter-spacing:0.1em;
+              text-transform:uppercase;margin-bottom:0.5rem;">
+        🕐  Últimos 10 Registros
+    </p>""", unsafe_allow_html=True)
+    try:
+        ultimos = db_exec(
+            "SELECT fecha, id_control, cantidad, operador FROM picheos ORDER BY id DESC LIMIT 10",
+            fetch="all")
+        if ultimos:
+            df_u = pd.DataFrame(ultimos, columns=["Fecha", "Control", "Cantidad", "Operador"])
+            st.dataframe(df_u, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin registros todavía.")
+    except Exception as e:
+        logging.error(f"Error últimos registros: {e}")
+
+
+# ── REGISTROS ───────────────────────────────────────────
+def vista_registros():
+    user = st.session_state.user
+    titulo_seccion("Gestión de Registros", "📝")
+
+    # ── Formulario de ingreso ──
+    with st.expander("➕  NUEVO REGISTRO", expanded=True):
+        c1, c2, c3, c4 = st.columns([1.5, 2, 1.5, 1.2])
+        with c1:
+            reg_fecha = st.date_input("Fecha", value=datetime.now().date(), key="rf")
+        with c2:
+            reg_id    = st.text_input("ID Control", placeholder="Ej: BC-20250601", key="rid")
+        with c3:
+            reg_cant  = st.number_input("Cantidad", min_value=1, step=1, key="rc")
+        with c4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💾  GUARDAR", use_container_width=True, key="btn_guardar"):
+                if not reg_id.strip():
+                    st.error("El ID de control es obligatorio.")
+                elif reg_cant <= 0:
+                    st.error("La cantidad debe ser mayor a 0.")
+                else:
+                    try:
+                        db_exec(
+                            "INSERT INTO picheos (fecha,id_control,cantidad,operador) VALUES (?,?,?,?)",
+                            (str(reg_fecha), reg_id.strip(), int(reg_cant), user[1]))
+                        st.success("✅ Registro guardado correctamente.")
+                        logging.info(f"{user[1]} guardó: {reg_id} - {reg_cant}")
+                        st.rerun()
+                    except Exception as e:
+                        logging.error(f"Error guardando registro: {e}")
+                        st.error(f"No se pudo guardar: {e}")
+
+    divider()
+
+    # ── Filtros de búsqueda ──
+    with st.expander("🔍  FILTROS DE BÚSQUEDA"):
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            f_desde = st.date_input("Desde", value=datetime.now().date() - timedelta(days=90),
+                                    key="f_desde")
+        with fc2:
+            f_hasta = st.date_input("Hasta", value=datetime.now().date(), key="f_hasta")
+        with fc3:
+            f_ctrl  = st.text_input("ID Control (contiene)", key="f_ctrl")
+
+    # ── Cargar datos ──
+    try:
+        q = "SELECT id,fecha,id_control,cantidad,operador FROM picheos WHERE fecha BETWEEN ? AND ?"
+        p = [str(f_desde), str(f_hasta)]
+        if f_ctrl.strip():
+            q += " AND id_control LIKE ?"
+            p.append(f"%{f_ctrl.strip()}%")
+        q += " ORDER BY id DESC LIMIT 500"
+        rows = db_exec(q, tuple(p), fetch="all")
+    except Exception as e:
+        logging.error(f"Error cargando registros: {e}")
+        st.error("Error al cargar registros.")
+        return
+
+    df = pd.DataFrame(rows, columns=["ID", "Fecha", "Control", "Cantidad", "Operador"]) \
+         if rows else pd.DataFrame(columns=["ID", "Fecha", "Control", "Cantidad", "Operador"])
+
+    # ── Totales rápidos ──
+    if not df.empty:
+        tot_pich = df["Cantidad"].sum()
+        p_row    = db_exec("SELECT valor FROM config WHERE clave='precio'", fetch="one")
+        precio   = float(p_row[0]) if p_row else 0.024
+        ca, cb, _ = st.columns([1, 1, 3])
+        with ca:
+            card_metric("REGISTROS", str(len(df)), C_ACCENT)
+        with cb:
+            card_metric("TOTAL PICHEOS", f"{tot_pich:,}", C_SUCCESS,
+                        f"≈ ${tot_pich*precio:,.2f} USD")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Tabla ──
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # ── Eliminar (solo admin) ──
+    if user[3] == "admin" and not df.empty:
+        divider()
+        st.markdown("**🗑️  Eliminar registro por ID** *(solo admin)*")
+        ec1, ec2 = st.columns([2, 4])
+        with ec1:
+            del_id = st.number_input("ID del registro a eliminar", min_value=1, step=1, key="del_id")
+        with ec2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("ELIMINAR REGISTRO", key="btn_del"):
+                exists = db_exec("SELECT id FROM picheos WHERE id=?", (int(del_id),), fetch="one")
+                if not exists:
+                    st.error("No existe un registro con ese ID.")
+                else:
+                    db_exec("DELETE FROM picheos WHERE id=?", (int(del_id),))
+                    st.success(f"Registro #{del_id} eliminado.")
+                    logging.info(f"Registro {del_id} eliminado por {user[1]}")
+                    st.rerun()
+
+    # ── Exportaciones ──
+    divider()
+    st.markdown(f"""
+    <p style="font-family:'Rajdhani',sans-serif;font-weight:600;
+              color:#7A90A8;font-size:0.8rem;letter-spacing:0.1em;
+              text-transform:uppercase;margin-bottom:0.5rem;">
+        📤  Exportar Datos
+    </p>""", unsafe_allow_html=True)
+
+    exp1, exp2, _ = st.columns([1, 1, 4])
+    with exp1:
+        try:
+            buf_xl = exportar_excel()
+            st.download_button(
+                label="📊  EXCEL",
+                data=buf_xl,
+                file_name=f"BeisSeven_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True)
+        except Exception as e:
+            st.error(f"Error Excel: {e}")
+    with exp2:
+        if PDF_OK:
+            try:
+                buf_pdf = exportar_pdf()
+                if buf_pdf:
+                    st.download_button(
+                        label="📄  PDF",
+                        data=buf_pdf,
+                        file_name=f"BeisSeven_{datetime.now().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True)
+            except Exception as e:
+                st.error(f"Error PDF: {e}")
+        else:
+            st.warning("Instala reportlab para PDF: `pip install reportlab`")
+
+
+# ── USUARIOS ─────────────────────────────────────────────
+def vista_usuarios():
+    user = st.session_state.user
+    if user[3] != "admin":
+        st.error("🔒 Acceso restringido — solo administradores.")
+        return
+
+    titulo_seccion("Gestión de Personal", "👥")
+
+    # ── Formulario nuevo usuario ──
+    with st.expander("➕  CREAR NUEVO USUARIO", expanded=True):
+        u1, u2, u3, u4 = st.columns([2, 2, 1.5, 1.2])
+        with u1:
+            usr_nom  = st.text_input("Nombre de usuario", key="u_nom")
+        with u2:
+            usr_pass = st.text_input("Contraseña", type="password", key="u_pass")
+        with u3:
+            usr_rol  = st.selectbox("Rol", ["operador", "admin"], key="u_rol")
+        with u4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("CREAR USUARIO", use_container_width=True, key="btn_crear_usr"):
+                if not usr_nom.strip() or not usr_pass.strip():
+                    st.error("Nombre y contraseña son obligatorios.")
+                else:
+                    ph = hashlib.sha256(usr_pass.encode()).hexdigest()
+                    try:
+                        db_exec("INSERT INTO usuarios (nombre,pass,rol) VALUES (?,?,?)",
+                                (usr_nom.strip(), ph, usr_rol))
+                        st.success(f"✅ Usuario '{usr_nom}' creado correctamente.")
+                        logging.info(f"Usuario creado: {usr_nom} por {user[1]}")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("El nombre de usuario ya existe.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+    divider()
+
+    # ── Tabla de usuarios ──
+    try:
+        rows = db_exec("SELECT id,nombre,rol FROM usuarios ORDER BY id", fetch="all")
+        df_u = pd.DataFrame(rows, columns=["ID", "Usuario", "Rol"]) if rows else \
+               pd.DataFrame(columns=["ID", "Usuario", "Rol"])
+        st.dataframe(df_u, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Error al cargar usuarios: {e}")
+        return
+
+    # ── Eliminar usuario ──
+    divider()
+    st.markdown("**🗑️  Eliminar usuario**")
+    nombres = [r[1] for r in rows if r[1] != user[1]]  # excluir yo mismo
+    if nombres:
+        del_usr = st.selectbox("Seleccione usuario a eliminar", nombres, key="del_usr")
+        if st.button("ELIMINAR USUARIO SELECCIONADO", key="btn_del_usr"):
+            if del_usr == "admin":
+                st.error("No se puede eliminar al administrador principal.")
+            else:
+                db_exec("DELETE FROM usuarios WHERE nombre=?", (del_usr,))
+                st.success(f"Usuario '{del_usr}' eliminado.")
+                logging.info(f"Usuario {del_usr} eliminado por {user[1]}")
+                st.rerun()
+    else:
+        st.info("No hay otros usuarios para eliminar.")
+
+
+# ── CONFIGURACIÓN ────────────────────────────────────────
+def vista_config():
+    user = st.session_state.user
+    if user[3] != "admin":
+        st.error("🔒 Acceso restringido — solo administradores.")
+        return
+
+    titulo_seccion("Configuración del Sistema", "⚙️")
+
+    col_c, _ = st.columns([1.5, 2.5])
+    with col_c:
+        st.markdown("""
+        <div style="background:#0A1628;border:1px solid #0D2040;
+                    border-radius:14px;padding:2rem;">
+        """, unsafe_allow_html=True)
+
+        try:
+            p_row = db_exec("SELECT valor FROM config WHERE clave='precio'", fetch="one")
+            precio_actual = float(p_row[0]) if p_row else 0.024
+        except Exception:
+            precio_actual = 0.024
+
+        nuevo_precio = st.number_input(
+            "💵  Precio por Unidad (USD)",
+            min_value=0.0,
+            value=precio_actual,
+            step=0.001,
+            format="%.4f",
+            help="Valor en dólares por cada picheo registrado.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        if st.button("💾  GUARDAR CONFIGURACIÓN", use_container_width=True, key="btn_conf"):
+            if nuevo_precio < 0:
+                st.error("El precio no puede ser negativo.")
+            else:
+                try:
+                    db_exec("UPDATE config SET valor=? WHERE clave='precio'", (str(nuevo_precio),))
+                    st.success(f"✅ Precio actualizado a ${nuevo_precio:.4f} USD")
+                    logging.info(f"Precio actualizado a {nuevo_precio} por {user[1]}")
+                except Exception as e:
+                    st.error(f"Error al guardar: {e}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    divider()
+
+    # ── Información del sistema ──
+    st.markdown(f"""
+    <p style="font-family:'Rajdhani',sans-serif;font-weight:600;
+              color:#7A90A8;font-size:0.8rem;letter-spacing:0.1em;
+              text-transform:uppercase;margin-bottom:0.8rem;">
+        ℹ️  Información del Sistema
+    </p>""", unsafe_allow_html=True)
+
+    try:
+        total_reg  = db_exec("SELECT COUNT(*) FROM picheos",   fetch="one")[0]
+        total_usr  = db_exec("SELECT COUNT(*) FROM usuarios",  fetch="one")[0]
+        db_size    = os.path.getsize(DB_NAME) / 1024 if os.path.exists(DB_NAME) else 0
+
+        si1, si2, si3 = st.columns(3)
+        with si1:
+            card_metric("TOTAL REGISTROS", f"{total_reg:,}", C_ACCENT)
+        with si2:
+            card_metric("USUARIOS ACTIVOS", str(total_usr), C_SUCCESS)
+        with si3:
+            card_metric("TAMAÑO DB", f"{db_size:.1f} KB", C_WARN)
+    except Exception as e:
+        st.error(f"Error info sistema: {e}")
+
+
+# ═══════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════
+def main():
+    init_session()
+    inicializar_db()
+
+    if not st.session_state.logged_in:
+        pantalla_login()
+        return
+
+    sidebar_nav()
+
+    nav = st.session_state.nav
+    if nav == "Dashboard":
+        vista_dashboard()
+    elif nav == "Registros":
+        vista_registros()
+    elif nav == "Usuarios":
+        vista_usuarios()
+    elif nav == "Configuración":
+        vista_config()
+
 
 if __name__ == "__main__":
-    # app = LoginApp()
-    # app.mainloop()
-    pass
+    main()
