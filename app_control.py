@@ -12,10 +12,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS unificados en una sola línea para evitar fallos de parseo en Python 3.14+
-CSS_PRODUCCION = "<style>.metric-card {background-color: #161B26; border-left: 5px solid #00E676; padding: 24px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-bottom: 15px;} .metric-label {color: #8B949E; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;} .metric-value {color: #FFFFFF; font-size: 38px; font-weight: 700; font-family: 'Courier New', monospace; margin-top: 5px;} .stTabs [data-baseweb='tab-list'] {gap: 8px;} .stTabs [data-baseweb='tab'] {background-color: #161B26; border-radius: 4px 4px 0px 0px; padding: 10px 20px; color: #FFFFFF;} .stTabs [data-baseweb='tab']:hover {color: #00E676;}</style>"
-st.markdown(CSS_PRODUCCION, unsafe_with_html=True)
-
 # ==========================================
 # 1. CONEXIÓN Y VERIFICACIÓN DE NEON (POSTGRESQL)
 # ==========================================
@@ -132,7 +128,7 @@ if not st.session_state["sesion_activa"]:
 # 3. ENTORNO DE TRABAJO (SESIÓN ACTIVA)
 # ==========================================
 else:
-    # Barra lateral estilizada
+    # Barra lateral
     st.sidebar.markdown("<h2 style='color: #00E676; margin-bottom: 0;'>⚾ APEX PITCH</h2>", unsafe_with_html=True)
     st.sidebar.markdown("<p style='color: #8B949E; font-size: 12px;'>Professional Scouting Log</p>", unsafe_with_html=True)
     st.sidebar.write("---")
@@ -184,19 +180,9 @@ else:
                 st.write("")
                 col_m1, col_m2 = st.columns(2)
                 with col_m1:
-                    st.markdown(f"""
-                        <div class="metric-card">
-                            <div class="metric-label">Volumen Total de Picheos</div>
-                            <div class="metric-value">{volumen_picheos:,}</div>
-                        </div>
-                    """, unsafe_with_html=True)
+                    st.metric(label="Volumen Total de Picheos", value=f"{volumen_picheos:,}")
                 with col_m2:
-                    st.markdown(f"""
-                        <div class="metric-card" style="border-left-color: #00B0FF;">
-                            <div class="metric-label">Rendimiento Monetario (USD)</div>
-                            <div class="metric-value">${volumen_picheos * tarifa_unidad:,.2f}</div>
-                        </div>
-                    """, unsafe_with_html=True)
+                    st.metric(label="Rendimiento Monetario (USD)", value=f"${volumen_picheos * tarifa_unidad:,.2f}")
                 
             except Exception as e:
                 st.error(f"Error al calcular métricas: {e}")
