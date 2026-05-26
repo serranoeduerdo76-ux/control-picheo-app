@@ -76,7 +76,7 @@ def preparar_datos_defecto():
         with engine.begin() as conn:
             conn.execute(text("INSERT INTO usuarios (nombre, pass, rol) VALUES ('admin', :p, 'admin');"), {"p": hash_admin})
 
-# Ejecución de inicialización de tablas (Protege los datos existentes)
+# Ejecución de inicialización de tablas (Mantiene y respeta los datos existentes)
 try:
     inicializar_base_de_datos()
     preparar_datos_defecto()
@@ -90,7 +90,7 @@ if "autenticado" not in st.session_state:
     st.session_state["rol"] = None
 
 # ==========================================
-# 2. SISTEMA DE AUTENTICACIÓN CORREGIDO (ROBUSTO)
+# 2. SISTEMA DE AUTENTICACIÓN HÍBRIDO (ROBUSTO)
 # ==========================================
 if not st.session_state["autenticado"]:
     st.title("⚾ Control de Picheo")
@@ -111,7 +111,7 @@ if not st.session_state["autenticado"]:
                     st.success("🔑 Acceso Maestro Concedido. Redirigiendo...")
                     st.rerun()
                 else:
-                    # 2. Verificación robusta por mapeo de nombres de columna (Evita el bug de desfase de índices)
+                    # 2. Verificación por mapeo asociativo (Evita desfases y valida texto plano / SHA-256)
                     try:
                         with engine.connect() as conn:
                             query = text("SELECT nombre, pass, rol FROM usuarios WHERE nombre = :u;")
@@ -124,7 +124,8 @@ if not st.session_state["autenticado"]:
                             
                             input_hash = hashlib.sha256(clave_input.encode('utf-8')).hexdigest()
                             
-                            if input_hash == hash_almacenado:
+                            # SOLUCIÓN CRÍTICA: Compara contra el hash O directamente contra texto plano existente
+                            if input_hash == hash_almacenado or clave_input == hash_almacenado:
                                 st.session_state["autenticado"] = True
                                 st.session_state["usuario"] = nombre_usuario
                                 st.session_state["rol"] = rol_usuario
