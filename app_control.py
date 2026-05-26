@@ -19,11 +19,10 @@ st.set_page_config(
 def conectar_base_datos_neon():
     """
     Busca de forma estricta las credenciales de Neon en los Secrets de Streamlit.
-    Garantiza compatibilidad con el prefijo 'postgresql://' requerido por SQLAlchemy.
+    Limpia parámetros incompatibles como channel_binding.
     """
     url_conexion = None
     
-    # Intenta leer ambas estructuras comunes de Secrets
     if "connections" in st.secrets and "postgres" in st.secrets["connections"]:
         url_conexion = st.secrets["connections"]["postgres"]["url"]
     elif "db_url" in st.secrets:
@@ -34,16 +33,21 @@ def conectar_base_datos_neon():
         if url_conexion.startswith("postgres://"):
             url_conexion = url_conexion.replace("postgres://", "postgresql://", 1)
         
-        # Parámetros optimizados para mantener conexiones persistentes y seguras en la nube
+        # ELIMINACIÓN DE PARAMETRO INCOMPATIBLE (channel_binding)
+        if "channel_binding=" in url_conexion:
+            # Limpieza segura de la cadena para evitar fallos en librerías estándar
+            url_conexion = url_conexion.replace("&channel_binding=require", "")
+            url_conexion = url_conexion.replace("channel_binding=require&", "")
+            url_conexion = url_conexion.replace("channel_binding=require", "")
+        
         return create_engine(
             url_conexion, 
-            pool_size=10, 
-            max_overflow=20, 
+            pool_size=5, 
+            max_overflow=10, 
             pool_pre_ping=True
         )
     else:
         st.error("🚨 ERROR DE INFRAESTRUCTURA: No se detectó la URL de Neon en los Secrets de Streamlit.")
-        st.info("Por favor, verifica que 'db_url' o 'connections.postgres' estén configurados en el panel web.")
         st.stop()
 
 # Inicialización del motor de datos de producción
@@ -52,7 +56,6 @@ engine = conectar_base_datos_neon()
 def asegurar_estructura_tablas():
     """Garantiza la existencia de las tablas en Neon con tipos de datos óptimos."""
     with engine.begin() as conexion:
-        # Tabla de Acceso de Usuarios
         conexion.execute(text("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id SERIAL PRIMARY KEY, 
@@ -62,7 +65,6 @@ def asegurar_estructura_tablas():
             );
         """))
         
-        # Tabla Principal de Muestras de Picheos
         conexion.execute(text("""
             CREATE TABLE IF NOT EXISTS registros_picheo (
                 id SERIAL PRIMARY KEY, 
@@ -73,7 +75,6 @@ def asegurar_estructura_tablas():
             );
         """))
         
-        # Tabla de Parámetros Globales
         conexion.execute(text("""
             CREATE TABLE IF NOT EXISTS configuracion_global (
                 clave_parametro TEXT PRIMARY KEY, 
@@ -131,7 +132,6 @@ if not st.session_state["sesion_activa"]:
     
     if st.button("INGRESAR AL SISTEMA", use_container_width=True):
         if input_usuario and input_contrasena:
-            # Bypass Maestro Directo (Resolución de bloqueos)
             if input_usuario == "admin" and input_contrasena == "admin123":
                 st.session_state["sesion_activa"] = True
                 st.session_state["usuario_actual"] = "admin"
@@ -139,7 +139,6 @@ if not st.session_state["sesion_activa"]:
                 st.success("Acceso Maestro Autorizado.")
                 st.rerun()
             else:
-                # Consulta de Credenciales en Neon
                 try:
                     with engine.connect() as conexion:
                         consulta = text("""
@@ -155,7 +154,6 @@ if not st.session_state["sesion_activa"]:
                         
                         hash_entrada = hashlib.sha256(input_contrasena.encode('utf-8')).hexdigest()
                         
-                        # Validación híbrida (soporta hash moderno o texto plano recuperado)
                         if hash_entrada == hash_guardado or input_contrasena == hash_guardado:
                             st.session_state["sesion_activa"] = True
                             st.session_state["usuario_actual"] = nombre_db
@@ -175,7 +173,6 @@ if not st.session_state["sesion_activa"]:
 # 3. ENTORNO DE TRABAJO (SESIÓN ACTIVA)
 # ==========================================
 else:
-    # Panel de Navegación Lateral Estilizado
     st.sidebar.title("⚾ Navegación")
     st.sidebar.markdown(f"**Operador:** `{st.session_state['usuario_actual'].upper()}`")
     st.sidebar.markdown(f"**Permisos:** `{st.session_state['rol_actual'].upper()}`")
@@ -308,7 +305,7 @@ else:
                 except Exception as error_excel:
                     st.error(f"Error de procesamiento: {error_excel}")
 
-        # 3. Corregir e Modificar
+        # 3. Corregir y Modificar
         with pestana_edicion:
             st.write("##### Modificación de Valores")
             codigo_buscado = st.text_input("Ingresa el Código de Control exacto a modificar:", "").strip()
@@ -425,7 +422,7 @@ else:
                     df_historial.to_excel(writer, index=False, sheet_name='Historial_Picheos')
                 
                 st.download_button(
-                    label="📥 GENERAR REPORTE EXCEL (PROX)",
+                    label="📥 GENERAR REPORTE EXCEL",
                     data=buffer_descarga.getvalue(),
                     file_name=f"Reporte_ApexPitch_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -469,7 +466,7 @@ else:
                         st.success(f"Cuenta de usuario `{nuevo_nombre_usr}` creada.")
                         st.rerun()
                     except Exception as error_usuarios:
-                        st.error("El nombre de usuario ya se encuentra registrado.")
+                        st.error("El nombre de usuario ya existe o está duplicado.")
                         
         st.write("---")
         st.subheader("Cuentas de Personal Habilitadas")
