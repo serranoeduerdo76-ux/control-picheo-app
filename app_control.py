@@ -87,14 +87,19 @@ html, body, [data-testid="stAppViewContainer"] {
 # COMPONENTES
 # ─────────────────────────────────────────────
 def card_metric(titulo, valor, color=C_ACCENT, subtitulo=""):
-    sub = f"<p style='margin:0;font-size:0.78rem;color:#7A90A8;'>{subtitulo}</p>" if subtitulo else ""
+    sub = f"<p style='margin:2px 0 0;font-size:0.72rem;color:#7A90A8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>{subtitulo}</p>" if subtitulo else ""
     st.markdown(f"""
     <div style="background:#0A1628;border:1px solid #0D2040;border-radius:14px;
-                padding:1.4rem 1.6rem;text-align:center;border-top:3px solid {color};">
-        <p style="margin:0 0 6px;font-family:'Rajdhani',sans-serif;font-size:0.75rem;
-                  font-weight:600;letter-spacing:0.14em;color:#7A90A8;text-transform:uppercase;">{titulo}</p>
-        <p style="margin:0;font-family:'Rajdhani',sans-serif;font-size:2.6rem;
-                  font-weight:700;color:{color};line-height:1;">{valor}</p>
+                padding:1rem 0.8rem;text-align:center;border-top:3px solid {color};
+                min-height:110px;display:flex;flex-direction:column;justify-content:center;">
+        <p style="margin:0 0 4px;font-family:'Rajdhani',sans-serif;font-size:0.68rem;
+                  font-weight:600;letter-spacing:0.12em;color:#7A90A8;
+                  text-transform:uppercase;white-space:nowrap;overflow:hidden;
+                  text-overflow:ellipsis;">{titulo}</p>
+        <p style="margin:0;font-family:'Rajdhani',sans-serif;
+                  font-size:clamp(1.2rem,2.5vw,2rem);
+                  font-weight:700;color:{color};line-height:1.1;
+                  word-break:break-word;overflow-wrap:anywhere;">{valor}</p>
         {sub}
     </div>""", unsafe_allow_html=True)
 
@@ -121,7 +126,8 @@ def divider():
 # ─────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    return conn
 
 def db_conn():
     conn = get_conn()
@@ -148,6 +154,7 @@ def db_exec(query: str, params: tuple = (), fetch: str = "none"):
         logging.error(f"DB error: {e} | Query: {query}")
         raise e
 
+@st.cache_resource(show_spinner="Conectando a Neon... ☁️")
 def inicializar_db():
     """
     Crea las tablas en Neon.
@@ -656,10 +663,11 @@ def vista_config():
 def main():
     init_session()
     try:
-        inicializar_db()
+        inicializar_db()   # cacheado — solo corre la primera vez
     except Exception as e:
         st.error(f"❌ No se pudo conectar a Neon: {e}")
         st.info("Verifica tu conexión a internet y que el servidor Neon esté activo.")
+        st.cache_resource.clear()   # limpia caché para reintentar
         st.stop()
 
     if not st.session_state.logged_in:
