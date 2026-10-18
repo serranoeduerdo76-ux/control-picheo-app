@@ -9,6 +9,7 @@ import psycopg2
 import hashlib
 import pandas as pd
 from datetime import datetime, timedelta
+import calendar
 from io import BytesIO
 import logging
 
@@ -156,14 +157,8 @@ def db_exec(query: str, params: tuple = (), fetch: str = "none"):
 
 @st.cache_resource(show_spinner="Conectando a Neon... ☁️")
 def inicializar_db():
-    """
-    Crea las tablas en Neon.
-    Si ya existen con esquema incorrecto, las recrea.
-    """
-    # ── Reiniciar tablas si tienen columnas incorrectas ──
     conn = db_conn()
     with conn.cursor() as cur:
-        # Verificar si la tabla usuarios tiene la columna 'nombre'
         cur.execute("""
             SELECT column_name FROM information_schema.columns
             WHERE table_name='usuarios' AND column_name='nombre'
@@ -171,14 +166,12 @@ def inicializar_db():
         tiene_nombre = cur.fetchone()
 
         if not tiene_nombre:
-            # Tabla existe con otro esquema — borrar y recrear todo
             logging.warning("Esquema incorrecto detectado. Recreando tablas...")
             cur.execute("DROP TABLE IF EXISTS picheos CASCADE")
             cur.execute("DROP TABLE IF EXISTS usuarios CASCADE")
             cur.execute("DROP TABLE IF EXISTS config CASCADE")
             conn.commit()
 
-    # ── Crear tablas correctas ──
     db_exec("""
         CREATE TABLE IF NOT EXISTS usuarios (
             id     SERIAL PRIMARY KEY,
@@ -204,7 +197,6 @@ def inicializar_db():
     """)
     db_exec("INSERT INTO config (clave,valor) VALUES ('precio','0.024') ON CONFLICT DO NOTHING")
 
-    # ── Crear admin por defecto ──
     admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
     db_exec("""
         INSERT INTO usuarios (nombre, pass, rol)
@@ -241,7 +233,7 @@ def exportar_pdf() -> BytesIO:
              Paragraph(f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", s_style),
              Spacer(1, 0.4*cm)]
     datos = db_exec(
-        "SELECT fecha,id_control,cantidad,operador FROM picheos ORDER BY fecha DESC LIMIT 500",
+        "SELECT fecha,id_control,cantidad,operador FROM picheos ORDER BY fecha DESC",
         fetch="all")
     if datos:
         td = [["FECHA","CONTROL","CANTIDAD","OPERADOR"]] + [list(r) for r in datos]
@@ -384,19 +376,39 @@ def sidebar_nav():
 # VISTAS
 # ─────────────────────────────────────────────
 def vista_dashboard():
-    titulo_seccion("Resumen de Operaciones", "📊")
-    c1, c2 = st.columns(2)
-    with c1:
-        fecha_desde = st.date_input("📅 Desde",
-            value=datetime.now().date() - timedelta(days=30), key="d_desde")
-    with c2:
-        fecha_hasta = st.date_input("📅 Hasta",
-            value=datetime.now().date(), key="d_hasta")
-    divider()
+    titulo_seccion("Resumen de Operaciones por Quincena", "📊")
+    
+    # ── Selección de Filtros por Quincena ──
+    col_anio, col_mes, col_quincena = st.columns(3)
+    
+    hoy = datetime.now().date()
+    
+    with col_anio:
+        anio = st.number_input("📆 Año", min_value=2020, max_value=2035, value=hoy.year)
+    
+    with col_mes:
+        meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        mes_sel = st.selectbox("📅 Mes", meses, index=hoy.month - 1)
+        num_mes = meses.index(mes_sel) + 1
 
-    if fecha_desde > fecha_hasta:
-        st.warning("⚠️ La fecha 'Desde' no puede ser mayor que 'Hasta'.")
-        return
+    with col_quincena:
+        quincena = st.selectbox("🗓️ Quincena", ["1ª Quincena (Día 1 - 15)", "2ª Quincena (Día 16 - Fin de Mes)", "Todo el Mes"])
+
+    # Calcular rango de fechas exactas según la quincena seleccionada
+    if quincena == "1ª Quincena (Día 1 - 15)":
+        fecha_desde = datetime(anio, num_mes, 1).date()
+        fecha_hasta = datetime(anio, num_mes, 15).date()
+    elif quincena == "2ª Quincena (Día 16 - Fin de Mes)":
+        ultimo_dia = calendar.monthrange(anio, num_mes)[1]
+        fecha_desde = datetime(anio, num_mes, 16).date()
+        fecha_hasta = datetime(anio, num_mes, ultimo_dia).date()
+    else:
+        ultimo_dia = calendar.monthrange(anio, num_mes)[1]
+        fecha_desde = datetime(anio, num_mes, 1).date()
+        fecha_hasta = datetime(anio, num_mes, ultimo_dia).date()
+
+    divider()
 
     try:
         total = db_exec(
@@ -424,7 +436,7 @@ def vista_dashboard():
     m1, m2, m3, m4 = st.columns(4)
     with m1: card_metric("TOTAL PICHEOS", f"{total:,}", C_ACCENT, f"{fecha_desde} → {fecha_hasta}")
     with m2: card_metric("USD ESTIMADO", f"${total*precio:,.2f}", C_SUCCESS, f"@ ${precio}/unidad")
-    with m3: card_metric("DÍAS ACTIVOS", str(dias), C_WARN, "En el rango")
+    with m3: card_metric("DÍAS ACTIVOS", str(dias), C_WARN, "En la quincena")
     with m4: card_metric("TOP OPERADOR",
                          top_row[0] if top_row else "—", "#BF8FFF",
                          f"{int(top_row[1]):,} picheos" if top_row else "0 picheos")
@@ -439,29 +451,40 @@ def vista_dashboard():
         if not df_c.empty:
             st.markdown("""<p style="font-family:'Rajdhani',sans-serif;font-weight:600;
                 color:#7A90A8;font-size:0.8rem;letter-spacing:0.1em;text-transform:uppercase;">
-                📈  Evolución Diaria</p>""", unsafe_allow_html=True)
+                📈  Evolución Diaria de la Quincena</p>""", unsafe_allow_html=True)
             df_c["fecha"] = pd.to_datetime(df_c["fecha"])
             st.area_chart(df_c.set_index("fecha")["total"], color=C_ACCENT)
         else:
-            st.info("Sin datos para graficar en este rango.")
+            st.info("Sin datos para graficar en esta quincena.")
     except Exception as e:
         logging.error(f"Error gráfica: {e}")
 
     divider()
-    st.markdown("""<p style="font-family:'Rajdhani',sans-serif;font-weight:600;color:#7A90A8;
-        font-size:0.8rem;letter-spacing:0.1em;text-transform:uppercase;">
-        🕐  Últimos 10 Registros</p>""", unsafe_allow_html=True)
+    
+    # ── Consulta y renderizado COMPLETO de TODAS las cargas de la quincena (SIN LIMITES) ──
     try:
         rows = db_exec(
-            "SELECT fecha,id_control,cantidad,operador FROM picheos ORDER BY id DESC LIMIT 10",
-            fetch="all")
+            "SELECT fecha,id_control,cantidad,operador FROM picheos WHERE fecha BETWEEN %s AND %s ORDER BY fecha DESC, id DESC",
+            (str(fecha_desde), str(fecha_hasta)), fetch="all")
+        
+        cant_cargas = len(rows) if rows else 0
+        st.markdown(f"""<p style="font-family:'Rajdhani',sans-serif;font-weight:600;color:#7A90A8;
+            font-size:0.8rem;letter-spacing:0.1em;text-transform:uppercase;">
+            📋  Todas las Cargas de la Quincena Seleccionada ({cant_cargas} registros encontrados)</p>""", unsafe_allow_html=True)
+        
         if rows:
-            st.dataframe(pd.DataFrame(rows, columns=["Fecha","Control","Cantidad","Operador"]),
-                         use_container_width=True, hide_index=True)
+            df_quincena = pd.DataFrame(rows, columns=["Fecha","Control","Cantidad","Operador"])
+            # Tabla interactiva renderizada por completo con altura adaptativa para ver todos los registros
+            st.dataframe(
+                df_quincena, 
+                use_container_width=True, 
+                hide_index=True,
+                height=min(600, max(250, (len(df_quincena) + 1) * 35))
+            )
         else:
-            st.info("Sin registros todavía.")
+            st.info("No hay cargas registradas en este período de quincena.")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error al obtener registros: {e}")
 
 
 def vista_registros():
@@ -501,7 +524,7 @@ def vista_registros():
         if f_c.strip():
             q += " AND id_control ILIKE %s"
             p.append(f"%{f_c.strip()}%")
-        q += " ORDER BY id DESC LIMIT 500"
+        q += " ORDER BY id DESC"
         rows = db_exec(q, tuple(p), fetch="all")
     except Exception as e:
         st.error(f"Error: {e}")
@@ -663,11 +686,11 @@ def vista_config():
 def main():
     init_session()
     try:
-        inicializar_db()   # cacheado — solo corre la primera vez
+        inicializar_db()
     except Exception as e:
         st.error(f"❌ No se pudo conectar a Neon: {e}")
         st.info("Verifica tu conexión a internet y que el servidor Neon esté activo.")
-        st.cache_resource.clear()   # limpia caché para reintentar
+        st.cache_resource.clear()
         st.stop()
 
     if not st.session_state.logged_in:
